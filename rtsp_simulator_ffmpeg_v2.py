@@ -31,6 +31,8 @@ import importlib.util
 import subprocess
 import shutil
 import psutil
+import dotenv
+
 try:
     import GPUtil
     GPU_AVAILABLE = True
@@ -41,26 +43,57 @@ from collections import deque
 import json
 from datetime import datetime
 
-# 로깅 설정
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# 환경변수 관리
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # .env 파일 로드
+    ENV_LOADED = True
+except ImportError:
+    ENV_LOADED = False
+    logger.warning("python-dotenv가 설치되지 않음. 환경변수 파일(.env)을 사용할 수 없습니다.")
+
+# 로깅 설정
+
+# 환경변수 헬퍼 함수
+def get_env_value(key: str, default_value, value_type=str):
+    """환경변수에서 값을 가져오는 헬퍼 함수"""
+    try:
+        value = os.getenv(key)
+        if value is None:
+            return default_value
+        
+        if value_type == bool:
+            return value.lower() in ('true', '1', 'yes', 'on')
+        elif value_type == int:
+            return int(value)
+        elif value_type == float:
+            return float(value)
+        else:
+            return value
+    except (ValueError, TypeError):
+        logger.warning(f"환경변수 {key}의 값이 올바르지 않음. 기본값 사용: {default_value}")
+        return default_value
 
 @dataclass
 class RTSPConfig:
     """RTSP 처리 설정 클래스"""
     sources: List[str]  # 소스 리스트 (RTSP URL 또는 파일 경로)
-    thread_count: int = 6
-    max_frames: Optional[int] = None
+    thread_count: int = get_env_value('DEFAULT_THREAD_COUNT', 6, int)
+    max_duration_seconds: Optional[int] = get_env_value('DEFAULT_MAX_DURATION', None, int)
     frame_loss_rate: float = 0.0
     reconnect_interval: int = 5
     connection_timeout: int = 10
     enable_processing: bool = True
-    blur_module_path: Optional[str] = None  # 블러 모듈 경로
+    blur_module_path: Optional[str] = get_env_value('BLUR_MODULE_PATH', None)  # 블러 모듈 경로
     save_enabled: bool = False  # 저장 활성화
-    save_path: str = "./output/"  # 저장 경로
+    save_path: str = get_env_value('DEFAULT_OUTPUT_PATH', "./output/")  # 저장 경로
     save_interval: int = 1  # 저장 간격 (1=모든 프레임)
     save_format: str = "jpg"  # 저장 포맷
-    input_fps: float = 15.0  # 입력 영상 FPS
+    input_fps: float = get_env_value('DEFAULT_INPUT_FPS', 15.0, float)  # 입력 영상 FPS
     force_fps: bool = True  # FPS 강제 설정 여부
     processing_queue_size: int = 1000  # 처리 큐 크기
     preview_queue_size: int = 50  # 미리보기 큐 크기
@@ -1432,6 +1465,12 @@ class RTSPProcessor:
         # FPS 기반 프레임 간격 계산
         frame_interval = 1.0 / self.config.input_fps
         last_frame_time = time.time()
+        start_time = time.time()  # 스레드 시작 시간 기록
+        
+        # 스레드 시작 시간을 connection_status에 저장
+        if thread_id not in self.connection_status:
+            self.connection_status[thread_id] = {}
+        self.connection_status[thread_id]['start_time'] = start_time
         
         while self.running:
             try:
@@ -1473,9 +1512,11 @@ class RTSPProcessor:
                 
                 last_frame_time = time.time()
                 
-                # 최대 프레임 수 체크
-                if self.config.max_frames and frames_received >= self.config.max_frames:
-                    break
+                # 최대 처리 시간 체크
+                if self.config.max_duration_seconds:
+                    elapsed_time = time.time() - start_time
+                    if elapsed_time >= self.config.max_duration_seconds:
+                        break
                 
                 # 프레임 통계 업데이트
                 self.frame_counter.increment_received()
@@ -1762,7 +1803,7 @@ class RTSPProcessorGUI:
         blur_frame.columnconfigure(1, weight=1)
         
         ttk.Label(blur_frame, text="블러 모듈 경로:").grid(row=0, column=0, sticky=tk.W, pady=2)
-        self.blur_module_var = tk.StringVar()
+        self.blur_module_var = tk.StringVar(value=get_env_value('BLUR_MODULE_PATH', ''))
         ttk.Entry(blur_frame, textvariable=self.blur_module_var, width=60).grid(row=0, column=1, sticky=(tk.W, tk.E), pady=2, padx=(5, 0))
         ttk.Button(blur_frame, text="파일 선택", command=self.browse_blur_module).grid(row=0, column=2, sticky=tk.W, pady=2, padx=(5, 0))
         
@@ -1984,12 +2025,12 @@ class RTSPProcessorGUI:
         misc_frame.columnconfigure(1, weight=1)
         
         ttk.Label(misc_frame, text="쓰레드 수:").grid(row=0, column=0, sticky=tk.W, pady=1)
-        self.thread_count_var = tk.IntVar(value=6)
+        self.thread_count_var = tk.IntVar(value=get_env_value('DEFAULT_THREAD_COUNT', 6, int))
         ttk.Entry(misc_frame, textvariable=self.thread_count_var, width=8).grid(row=0, column=1, sticky=(tk.W, tk.E), pady=1, padx=(5, 0))
         
-        ttk.Label(misc_frame, text="최대 프레임:").grid(row=1, column=0, sticky=tk.W, pady=1)
-        self.max_frames_var = tk.StringVar()
-        ttk.Entry(misc_frame, textvariable=self.max_frames_var, width=8).grid(row=1, column=1, sticky=(tk.W, tk.E), pady=1, padx=(5, 0))
+        ttk.Label(misc_frame, text="최대 시간(초):").grid(row=1, column=0, sticky=tk.W, pady=1)
+        self.max_duration_var = tk.StringVar()
+        ttk.Entry(misc_frame, textvariable=self.max_duration_var, width=8).grid(row=1, column=1, sticky=(tk.W, tk.E), pady=1, padx=(5, 0))
         
         ttk.Label(misc_frame, text="로스율(%):").grid(row=2, column=0, sticky=tk.W, pady=1)
         self.frame_loss_var = tk.DoubleVar(value=0.0)
@@ -2008,7 +2049,7 @@ class RTSPProcessorGUI:
         fps_frame.columnconfigure(1, weight=1)
         
         ttk.Label(fps_frame, text="입력 FPS:").grid(row=0, column=0, sticky=tk.W, pady=1)
-        self.input_fps_var = tk.DoubleVar(value=15.0)
+        self.input_fps_var = tk.DoubleVar(value=get_env_value('DEFAULT_INPUT_FPS', 15.0, float))
         ttk.Entry(fps_frame, textvariable=self.input_fps_var, width=8).grid(row=0, column=1, sticky=(tk.W, tk.E), pady=1, padx=(5, 0))
         
         self.force_fps_var = tk.BooleanVar(value=False)
@@ -2787,8 +2828,8 @@ VBR: 가변 비트레이트 (효율적)
     
     def browse_file(self, source_index):
         """파일 선택"""
-        # media 폴더가 없으면 생성
-        media_dir = "./media"
+        # 환경변수에서 미디어 경로를 가져와서 기본 디렉토리로 설정
+        media_dir = get_env_value('DEFAULT_MEDIA_PATH', "./media")
         os.makedirs(media_dir, exist_ok=True)
         
         filename = filedialog.askopenfilename(
@@ -2804,10 +2845,12 @@ VBR: 가변 비트레이트 (효율적)
     
     def browse_blur_module(self):
         """블러 모듈 파일 선택"""
-        # 현재 디렉토리를 기본으로 설정 (블러 모듈은 프로젝트 루트나 별도 경로에 있을 수 있음)
+        # 환경변수에서 블러 모듈 경로를 가져와서 해당 디렉토리를 기본으로 설정
+        default_blur_path = get_env_value('BLUR_MODULE_PATH', '.')
+        initial_dir = os.path.dirname(default_blur_path) if default_blur_path and os.path.isfile(default_blur_path) else "."
         filename = filedialog.askopenfilename(
             title="블러 모듈 파일 선택",
-            initialdir=".",
+            initialdir=initial_dir,
             filetypes=[
                 ("Python 파일", "*.py"),
                 ("모든 파일", "*.*")
@@ -2818,8 +2861,8 @@ VBR: 가변 비트레이트 (효율적)
     
     def browse_save_path(self):
         """저장 경로 선택"""
-        # output 폴더가 없으면 생성
-        output_dir = "./output"
+        # 환경변수에서 출력 경로를 가져와서 기본 디렉토리로 설정
+        output_dir = get_env_value('DEFAULT_OUTPUT_PATH', "./output")
         os.makedirs(output_dir, exist_ok=True)
         
         directory = filedialog.askdirectory(
@@ -2864,8 +2907,8 @@ VBR: 가변 비트레이트 (효율적)
     
     def browse_multiple_files(self):
         """다중 파일 선택"""
-        # media 폴더가 없으면 생성
-        media_dir = "./media"
+        # 환경변수에서 미디어 경로를 가져와서 기본 디렉토리로 설정
+        media_dir = get_env_value('DEFAULT_MEDIA_PATH', "./media")
         os.makedirs(media_dir, exist_ok=True)
         
         filenames = filedialog.askopenfilenames(
@@ -2911,9 +2954,9 @@ VBR: 가변 비트레이트 (효율적)
             return
         
         try:
-            max_frames = None
-            if self.max_frames_var.get():
-                max_frames = int(self.max_frames_var.get())
+            max_duration_seconds = None
+            if self.max_duration_var.get():
+                max_duration_seconds = int(self.max_duration_var.get())
             
             blur_module_path = self.blur_module_var.get().strip() if self.blur_module_var.get().strip() else None
             
@@ -2924,7 +2967,7 @@ VBR: 가변 비트레이트 (효율적)
             self.config = RTSPConfig(
                 sources=sources,
                 thread_count=self.thread_count_var.get(),
-                max_frames=max_frames,
+                max_duration_seconds=max_duration_seconds,
                 frame_loss_rate=self.frame_loss_var.get() / 100.0,
                 reconnect_interval=self.reconnect_var.get(),
                 enable_processing=self.processing_var.get(),
@@ -3250,11 +3293,14 @@ VBR: 가변 비트레이트 (효율적)
         self.update_resource_monitoring()
         self.update_performance_monitoring()
         
-        # 최대 프레임 수 도달 시 자동 중지
-        if (self.config and self.config.max_frames and 
-            stats['received_frames'] >= self.config.max_frames):
-            self.stop_processor()
-            self.log_message("최대 프레임 수에 도달하여 자동 중지됨")
+        # 최대 처리 시간 도달 시 자동 중지
+        if (self.config and self.config.max_duration_seconds):
+            # 모든 스레드의 시작 시간을 확인하기 위해 가장 오래된 스레드 기준
+            oldest_start_time = min([stat.get('start_time', time.time()) for stat in self.connection_status.values()], default=time.time())
+            elapsed_time = time.time() - oldest_start_time
+            if elapsed_time >= self.config.max_duration_seconds:
+                self.stop_processor()
+                self.log_message(f"최대 처리 시간({self.config.max_duration_seconds}초)에 도달하여 자동 중지됨")
     
     def update_codec_performance(self):
         """코덱 성능 정보 실시간 업데이트"""
