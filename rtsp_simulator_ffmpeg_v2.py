@@ -188,6 +188,9 @@ class ResourceMonitor:
                 cpu_percent = self.process.cpu_percent()
                 cpu_system = psutil.cpu_percent()
                 
+                # 🆕 CPU 온도 수집
+                cpu_temp = self._get_cpu_temperature()
+                
                 # RAM 사용량
                 memory_info = self.process.memory_info()
                 memory_percent = self.process.memory_percent()
@@ -201,7 +204,8 @@ class ResourceMonitor:
                         'timestamp': time.time(),
                         'process_cpu': cpu_percent,
                         'system_cpu': cpu_system,
-                        'cpu_count': psutil.cpu_count()
+                        'cpu_count': psutil.cpu_count(),
+                        'cpu_temperature': cpu_temp  # 🆕 CPU 온도 추가
                     })
                     
                     self.ram_history.append({
@@ -221,6 +225,38 @@ class ResourceMonitor:
             except Exception as e:
                 logger.error(f"리소스 모니터링 오류: {e}")
                 time.sleep(1)
+    
+    def _get_cpu_temperature(self) -> Optional[float]:
+        """CPU 온도 가져오기"""
+        try:
+            temps = psutil.sensors_temperatures()
+            if not temps:
+                return None
+            
+            # 다양한 센서 이름 시도
+            sensor_names = ['coretemp', 'k10temp', 'cpu_thermal', 'acpi']
+            
+            for sensor_name in sensor_names:
+                if sensor_name in temps:
+                    temp_list = temps[sensor_name]
+                    if temp_list:
+                        # 패키지 온도나 첫 번째 코어 온도 사용
+                        for temp in temp_list:
+                            if 'Package' in temp.label or 'Core 0' in temp.label:
+                                return temp.current
+                        # 패키지 온도가 없으면 첫 번째 온도 사용
+                        return temp_list[0].current
+            
+            # 위의 센서들이 없으면 첫 번째 센서의 첫 번째 온도 사용
+            for sensor_temps in temps.values():
+                if sensor_temps:
+                    return sensor_temps[0].current
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"CPU 온도 가져오기 실패: {e}")
+            return None
     
     def _get_gpu_info(self) -> Optional[Dict[str, Any]]:
         """GPU 정보 가져오기"""
@@ -284,6 +320,8 @@ class ResourceMonitor:
             # CPU 통계
             cpu_process = [entry['process_cpu'] for entry in self.cpu_history]
             cpu_system = [entry['system_cpu'] for entry in self.cpu_history]
+            # 🆕 CPU 온도 통계 추가
+            cpu_temperatures = [entry['cpu_temperature'] for entry in self.cpu_history if entry.get('cpu_temperature') is not None]
             
             # RAM 통계
             ram_process = [entry['process_ram_mb'] for entry in self.ram_history]
@@ -304,15 +342,27 @@ class ResourceMonitor:
                 }
             }
             
+            # 🆕 CPU 온도 통계 추가
+            if cpu_temperatures:
+                stats['cpu'].update({
+                    'temperature_avg': sum(cpu_temperatures) / len(cpu_temperatures),
+                    'temperature_max': max(cpu_temperatures),
+                    'temperature_min': min(cpu_temperatures)
+                })
+            
             # GPU 통계
             if self.gpu_history and self.gpu_available:
                 gpu_loads = []
                 gpu_memory = []
+                gpu_temperatures = []  # 🆕 GPU 온도 리스트 추가
                 
                 for entry in self.gpu_history:
                     for gpu in entry['gpus']:
                         gpu_loads.append(gpu['load'])
                         gpu_memory.append(gpu['memory_percent'])
+                        # 🆕 GPU 온도 수집
+                        if gpu.get('temperature') is not None:
+                            gpu_temperatures.append(gpu['temperature'])
                 
                 if gpu_loads:
                     stats['gpu'] = {
@@ -321,6 +371,14 @@ class ResourceMonitor:
                         'memory_avg_percent': sum(gpu_memory) / len(gpu_memory),
                         'memory_max_percent': max(gpu_memory)
                     }
+                    
+                    # 🆕 GPU 온도 통계 추가
+                    if gpu_temperatures:
+                        stats['gpu'].update({
+                            'temperature_avg': sum(gpu_temperatures) / len(gpu_temperatures),
+                            'temperature_max': max(gpu_temperatures),
+                            'temperature_min': min(gpu_temperatures)
+                        })
             
             return stats
 
@@ -2126,8 +2184,10 @@ class RTSPProcessorGUI:
         self.resource_labels = {}
         resource_items = [
             ('cpu_usage', 'CPU 사용률:'),
+            ('cpu_temperature', 'CPU 온도:'),  # 🆕 CPU 온도 추가
             ('ram_usage', 'RAM 사용률:'),
             ('gpu_usage', 'GPU 사용률:'),
+            ('gpu_temperature', 'GPU 온도:'),  # 🆕 GPU 온도 별도 추가
             ('gpu_memory', 'GPU 메모리:')
         ]
         
@@ -2571,11 +2631,25 @@ VBR: 가변 비트레이트 (효율적)
                 # 시스템 CPU 사용률 (가용 자원 대비)
                 system_cpu = cpu_data['system_cpu']
                 cpu_count = cpu_data['cpu_count']
+                cpu_temperature = cpu_data.get('cpu_temperature')  # 🆕 CPU 온도 가져오기
                 
                 self.resource_labels['cpu_usage'].config(
                     text=f"{system_cpu:.1f}% / 100% (🖥️{cpu_count}코어)",
                     foreground="red" if system_cpu > 90 else "orange" if system_cpu > 70 else "green"
                 )
+                
+                # 🆕 CPU 온도 표시
+                if cpu_temperature is not None:
+                    temp_color = "red" if cpu_temperature > 85 else "orange" if cpu_temperature > 75 else "green"
+                    self.resource_labels['cpu_temperature'].config(
+                        text=f"{cpu_temperature:.1f}°C",
+                        foreground=temp_color
+                    )
+                else:
+                    self.resource_labels['cpu_temperature'].config(
+                        text="사용 불가",
+                        foreground="gray"
+                    )
             
             if resource_stats['ram']:
                 ram_data = resource_stats['ram']
@@ -2600,19 +2674,36 @@ VBR: 가변 비트레이트 (효율적)
                     gpu_memory_total = gpu['memory_total_mb']
                     gpu_temp = gpu['temperature']
                     
+                    # 🆕 GPU 사용률에서 온도 제거
                     self.resource_labels['gpu_usage'].config(
-                        text=f"{gpu_load:.1f}% / 100% (🌡️{gpu_temp}°C)",
+                        text=f"{gpu_load:.1f}% / 100%",
                         foreground="red" if gpu_load > 90 else "orange" if gpu_load > 70 else "green"
                     )
+                    
+                    # 🆕 GPU 온도 별도 표시
+                    if gpu_temp is not None:
+                        temp_color = "red" if gpu_temp > 90 else "orange" if gpu_temp > 80 else "green"
+                        self.resource_labels['gpu_temperature'].config(
+                            text=f"{gpu_temp:.1f}°C",
+                            foreground=temp_color
+                        )
+                    else:
+                        self.resource_labels['gpu_temperature'].config(
+                            text="온도 없음",
+                            foreground="gray"
+                        )
+                    
                     self.resource_labels['gpu_memory'].config(
                         text=f"{gpu_memory_percent:.1f}% ({gpu_memory_used:.0f}/{gpu_memory_total:.0f}MB)",
                         foreground="red" if gpu_memory_percent > 90 else "orange" if gpu_memory_percent > 80 else "green"
                     )
                 else:
                     self.resource_labels['gpu_usage'].config(text="GPU 없음", foreground="gray")
+                    self.resource_labels['gpu_temperature'].config(text="GPU 없음", foreground="gray")
                     self.resource_labels['gpu_memory'].config(text="GPU 없음", foreground="gray")
             else:
                 self.resource_labels['gpu_usage'].config(text="사용 불가", foreground="gray")
+                self.resource_labels['gpu_temperature'].config(text="사용 불가", foreground="gray")
                 self.resource_labels['gpu_memory'].config(text="사용 불가", foreground="gray")
                 
         except Exception as e:
