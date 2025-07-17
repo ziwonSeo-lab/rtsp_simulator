@@ -7,7 +7,7 @@ from ultralytics import YOLO
 import numpy as np
 
 class HeadBlurrer:
-    def __init__(self, model_path="best_re_final.engine", num_camera=1):
+    def __init__(self, model_path="/home/koast-user/rtsp_simulator/blur_module/best_re_final.engine", num_camera=1, conf_threshold=0.5):
         """
         HeadBlurrer 초기화
         
@@ -15,7 +15,7 @@ class HeadBlurrer:
             model_path (str): PyTorch 모델 파일 경로
         """
         self.model_path = model_path
-        self.conf_threshold = 0.5  # 탐지 신뢰도 임계값
+        self.conf_threshold = conf_threshold  # 탐지 신뢰도 임계값
         
         # 모델 로드
         self.model = self._load_model()
@@ -162,7 +162,7 @@ def main():
     # 환경변수에서 설정 읽기
     interval = args.interval
     
-    model_path = 'best_re_final.engine'
+    model_path = '/home/koast-user/rtsp_simulator/blur_module/best_re_final.engine'
     confidence_threshold = args.confidence
     rtsp_url_1 = 'rtsp://root:root@192.168.1.101:554/cam0_0'
     rtsp_url_2 = 'rtsp://root:root@192.168.1.102:554/cam0_1'
@@ -319,7 +319,7 @@ if __name__ == "__main__":
 _blurrer_cache = {"obj": None}   
        # 싱글턴 캐시
 import threading
-_blurrer = HeadBlurrer(model_path="best_re_final.engine", num_camera=16)
+_blurrer = HeadBlurrer(model_path="/home/koast-user/rtsp_simulator/blur_module/best_re_final.engine", num_camera=1, conf_threshold=0.3)
 _thread2cam = {}  
 
 def apply_blur(frame,
@@ -332,5 +332,5 @@ def apply_blur(frame,
     return _blurrer.process_frame(
         frame, index_camera=idx,
         frame_interval=frame_interval,
-        blur_strength=blur_strength
+        blur_strength=blur_strength,
     )

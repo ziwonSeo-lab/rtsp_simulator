@@ -820,7 +820,7 @@ class RTSPProcessor:
             # HeadBlurrer 클래스가 있는지 확인하고 인스턴스 생성
             if hasattr(blur_module, 'HeadBlurrer'):
                 # 스레드별로 개별 HeadBlurrer 인스턴스 생성
-                head_blurrer = blur_module.HeadBlurrer(model_path="best_re_final.engine", num_camera=1)
+                head_blurrer = blur_module.HeadBlurrer(num_camera=1)
                 
                 # apply_blur 메서드를 가진 래퍼 객체 생성
                 class BlurWrapper:
@@ -2122,13 +2122,11 @@ class RTSPProcessorGUI:
         resource_frame = ttk.LabelFrame(stats_container_frame, text="💻 리소스 모니터링", padding="10")
         resource_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(5, 0))
         
-        # 리소스 모니터링 라벨들
+        # 리소스 모니터링 라벨들 (가용 자원 대비 사용률 중심)
         self.resource_labels = {}
         resource_items = [
-            ('cpu_process', 'CPU (프로세스):'),
-            ('cpu_system', 'CPU (시스템):'),
-            ('ram_process', 'RAM (프로세스):'),
-            ('ram_system', 'RAM (시스템):'),
+            ('cpu_usage', 'CPU 사용률:'),
+            ('ram_usage', 'RAM 사용률:'),
             ('gpu_usage', 'GPU 사용률:'),
             ('gpu_memory', 'GPU 메모리:')
         ]
@@ -2558,7 +2556,7 @@ VBR: 가변 비트레이트 (효율적)
             messagebox.showerror("오류", f"성능 보고서 저장 실패:\n{e}")
     
     def update_resource_monitoring(self):
-        """리소스 모니터링 정보 업데이트"""
+        """리소스 모니터링 정보 업데이트 (가용 자원 대비 사용률 중심)"""
         if not self.processor or not self.running:
             # 대기 상태 표시
             for key in self.resource_labels:
@@ -2570,39 +2568,28 @@ VBR: 가변 비트레이트 (효율적)
             
             if resource_stats['cpu']:
                 cpu_data = resource_stats['cpu']
-                # CPU 사용률
-                process_cpu = cpu_data['process_cpu']
+                # 시스템 CPU 사용률 (가용 자원 대비)
                 system_cpu = cpu_data['system_cpu']
                 cpu_count = cpu_data['cpu_count']
                 
-                self.resource_labels['cpu_process'].config(
-                    text=f"{process_cpu:.1f}% ({cpu_count} cores)",
-                    foreground="red" if process_cpu > 80 else "orange" if process_cpu > 50 else "green"
-                )
-                self.resource_labels['cpu_system'].config(
-                    text=f"{system_cpu:.1f}%",
+                self.resource_labels['cpu_usage'].config(
+                    text=f"{system_cpu:.1f}% / 100% (🖥️{cpu_count}코어)",
                     foreground="red" if system_cpu > 90 else "orange" if system_cpu > 70 else "green"
                 )
             
             if resource_stats['ram']:
                 ram_data = resource_stats['ram']
-                # RAM 사용량
-                process_ram_mb = ram_data['process_ram_mb']
-                process_ram_percent = ram_data['process_ram_percent']
+                # 시스템 RAM 사용률 (가용 자원 대비)
                 system_ram_percent = ram_data['system_ram_percent']
                 system_ram_used_gb = ram_data['system_ram_used_gb']
                 system_ram_total_gb = ram_data['system_ram_total_gb']
                 
-                self.resource_labels['ram_process'].config(
-                    text=f"{process_ram_mb:.1f}MB ({process_ram_percent:.1f}%)",
-                    foreground="red" if process_ram_percent > 10 else "orange" if process_ram_percent > 5 else "green"
-                )
-                self.resource_labels['ram_system'].config(
-                    text=f"{system_ram_used_gb:.1f}/{system_ram_total_gb:.1f}GB ({system_ram_percent:.1f}%)",
+                self.resource_labels['ram_usage'].config(
+                    text=f"{system_ram_percent:.1f}% ({system_ram_used_gb:.1f}/{system_ram_total_gb:.1f}GB)",
                     foreground="red" if system_ram_percent > 90 else "orange" if system_ram_percent > 80 else "green"
                 )
             
-            # GPU 정보
+            # GPU 정보 (가용 자원 대비 사용률)
             if resource_stats['gpu_available'] and resource_stats['gpu']:
                 gpu_data = resource_stats['gpu']
                 if gpu_data['gpus']:
@@ -2614,11 +2601,11 @@ VBR: 가변 비트레이트 (효율적)
                     gpu_temp = gpu['temperature']
                     
                     self.resource_labels['gpu_usage'].config(
-                        text=f"{gpu_load:.1f}% (🌡️{gpu_temp}°C)",
+                        text=f"{gpu_load:.1f}% / 100% (🌡️{gpu_temp}°C)",
                         foreground="red" if gpu_load > 90 else "orange" if gpu_load > 70 else "green"
                     )
                     self.resource_labels['gpu_memory'].config(
-                        text=f"{gpu_memory_used:.0f}/{gpu_memory_total:.0f}MB ({gpu_memory_percent:.1f}%)",
+                        text=f"{gpu_memory_percent:.1f}% ({gpu_memory_used:.0f}/{gpu_memory_total:.0f}MB)",
                         foreground="red" if gpu_memory_percent > 90 else "orange" if gpu_memory_percent > 80 else "green"
                     )
                 else:
@@ -3044,7 +3031,7 @@ VBR: 가변 비트레이트 (효율적)
                 
                 # 프레임 크기 조정
                 height, width = frame.shape[:2]
-                max_size = 200
+                max_size = 400
                 if width > max_size or height > max_size:
                     if width > height:
                         new_width = max_size
