@@ -57,21 +57,44 @@ rtsp_simulator/
 ├── output/                     # 출력 비디오 파일 폴더  
 │   ├── README.md              # 출력 구조 안내
 │   └── .gitkeep              # Git 추적용
+├── .env.example               # 환경변수 템플릿
 ├── README.md                  # 프로젝트 문서
+├── requirements.txt           # Python 패키지 종속성
 ├── .gitignore                # Git 무시 파일
 └── .gitmessage.txt          # 커밋 메시지 템플릿
 ```
 
-### 3. Python 패키지 설치
+### 3. 환경변수 설정
 ```bash
+# .env.example 파일을 .env로 복사
+cp .env.example .env
+
+# .env 파일을 환경에 맞게 수정
+nano .env  # 또는 선호하는 에디터 사용
+```
+
+주요 환경변수:
+- `BLUR_MODULE_PATH`: 블러 모듈 경로 (기본: ./blur_module/ipcamera_blur.py)
+- `DEFAULT_MEDIA_PATH`: 입력 미디어 폴더 (기본: ./media)
+- `DEFAULT_OUTPUT_PATH`: 출력 폴더 (기본: ./output)
+- `DEFAULT_THREAD_COUNT`: 기본 스레드 수 (기본: 6)
+- `DEFAULT_INPUT_FPS`: 기본 입력 FPS (기본: 15.0)
+
+### 4. Python 패키지 설치
+```bash
+# 필수 패키지 설치
+pip install -r requirements.txt
+
+# 또는 개별 설치
 pip install opencv-python
 pip install pillow
 pip install numpy
 pip install psutil
+pip install python-dotenv
 pip install GPUtil  # GPU 모니터링용 (선택사항)
 ```
 
-### 4. FFmpeg 설치
+### 5. FFmpeg 설치
 #### Windows
 1. [FFmpeg 다운로드](https://ffmpeg.org/download.html)
 2. 압축 해제 후 환경변수 PATH에 추가
