@@ -1,0 +1,85 @@
+# RTSP 시뮬레이터 v2 - Python 패키지 종속성
+# 설치: pip install -r requirements.txt
+
+# === 필수 패키지 ===
+# OpenCV - 비디오 처리 및 RTSP 연결
+opencv-python>=4.8.0
+
+# Pillow - 이미지 처리 및 GUI 미리보기
+Pillow>=10.0.0
+
+# NumPy - 수치 연산 및 배열 처리
+numpy>=1.24.0
+
+# psutil - 시스템 리소스 모니터링 (CPU, RAM)
+psutil>=5.9.0
+
+# === 선택적 패키지 ===
+# GPUtil - GPU 모니터링 (NVIDIA GPU가 있는 경우)
+# 설치 안되어도 프로그램은 정상 동작함
+GPUtil>=1.4.0
+
+# === AI/ML 블러 모듈 관련 패키지 ===
+# YOLO 모델을 사용한 얼굴 탐지 및 블러 처리
+# 이 패키지들은 블러 모듈 사용 시에만 필요합니다
+
+# PyTorch - 딥러닝 프레임워크 (YOLO 모델 실행)
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Ultralytics YOLO - 최신 YOLO 모델 (v8, v11)
+ultralytics>=8.0.0
+
+# ONNX Runtime - 최적화된 모델 추론 (선택사항)
+# onnxruntime-gpu>=1.16.0  # GPU 버전
+# onnxruntime>=1.16.0      # CPU 버전
+
+# TensorRT - NVIDIA GPU 최적화 (선택사항)
+# nvidia-tensorrt>=8.6.0   # NVIDIA GPU 전용
+
+# OpenVINO - Intel 최적화 (선택사항)  
+# openvino>=2023.0.0       # Intel CPU/GPU 최적화
+
+# 추가 이미지 처리 라이브러리
+scikit-image>=0.21.0      # 고급 이미지 처리
+matplotlib>=3.7.0         # 시각화 및 디버깅용
+
+# === 개발 도구 (선택사항) ===
+# 코드 포맷팅
+# black>=23.0.0
+# isort>=5.12.0
+
+# 타입 체킹
+# mypy>=1.5.0
+
+# 테스트
+# pytest>=7.4.0
+# pytest-cov>=4.1.0
+
+# === 시스템 요구사항 ===
+# Python >= 3.7
+# FFmpeg (별도 설치 필요)
+#   - Windows: https://ffmpeg.org/download.html
+#   - macOS: brew install ffmpeg  
+#   - Ubuntu: sudo apt install ffmpeg
+
+# === 하드웨어 가속 (선택사항) ===
+# NVIDIA GPU: CUDA Toolkit 설치 필요
+# Intel GPU: Intel Media SDK
+# AMD GPU: AMD Advanced Media Framework
+
+# === 설치 가이드 ===
+# 
+# 기본 설치 (블러 모듈 없이):
+#   pip install -r requirements.txt --only-binary=:none: opencv-python pillow numpy psutil
+#
+# AI 블러 모듈과 함께 설치:
+#   pip install -r requirements.txt
+#
+# GPU 가속 포함 설치 (NVIDIA):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+#   pip install -r requirements.txt
+#   pip install onnxruntime-gpu
+#
+# 선택적 패키지 활성화:
+#   requirements.txt에서 주석(#) 제거 후 설치 
