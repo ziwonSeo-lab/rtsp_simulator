@@ -68,39 +68,43 @@ class HeadBlurrer:
     
     def _apply_blur_to_heads(self, image, head_boxes, blur_strength=0.01):
         """
-        머리 영역에 블러 효과 적용
+        머리 영역에 블러 효과 적용 (배치 처리 최적화)
         
         Args:
             image: 원본 이미지
             head_boxes: 머리 바운딩 박스 리스트
+            blur_strength: 블러 강도 (0.15 = 15% 크기로 축소)
         
         Returns:
             블러 처리된 이미지
         """
+        if not head_boxes:
+            return image
+            
         result_image = image.copy()
+        h, w = image.shape[:2]
         
+        # 전체 이미지에 대해 한번만 블러 처리 (메모리 효율적)
+        blur_h = max(1, int(h * blur_strength))
+        blur_w = max(1, int(w * blur_strength))
+        
+        # 한번의 resize 연산으로 전체 이미지 블러 생성
+        small_image = cv2.resize(image, (blur_w, blur_h), interpolation=cv2.INTER_LINEAR)
+        blurred_full = cv2.resize(small_image, (w, h), interpolation=cv2.INTER_NEAREST)
+        
+        # 모든 head box 영역을 배치로 처리
         for box in head_boxes:
             x1, y1, x2, y2 = box
             
-            # 좌표 범위 검증
-            h, w = image.shape[:2]
+            # 좌표 범위 검증 및 정규화
             x1 = max(0, min(x1, w-1))
             y1 = max(0, min(y1, h-1))
             x2 = max(x1+1, min(x2, w))
             y2 = max(y1+1, min(y2, h))
             
-            # 머리 영역 추출
-            head_region = result_image[y1:y2, x1:x2]
-            
-            if head_region.size > 0:
-                hh, ww = head_region.shape[:2]
-                sw = max(1, int(ww * blur_strength))
-                sh = max(1, int(hh * blur_strength))
-                # 초고속 블러 (축소 후 확대)
-                small = cv2.resize(head_region, (sw, sh), interpolation=cv2.INTER_LINEAR)
-                blurred = cv2.resize(small, (ww, hh), interpolation=cv2.INTER_NEAREST)
-
-                result_image[y1:y2, x1:x2] = blurred
+            # 블러된 영역을 결과 이미지에 복사 (vectorized operation)
+            if (x2 - x1) > 0 and (y2 - y1) > 0:
+                result_image[y1:y2, x1:x2] = blurred_full[y1:y2, x1:x2]
         
         return result_image
 
@@ -108,7 +112,6 @@ class HeadBlurrer:
         """
         n 프레임마다 탐지 수행, 그 외에는 이전 탐지 결과 사용
         """
-
         if index_camera >= len(self.frame_counts):
             extra = index_camera - len(self.frame_counts) + 1
             self.frame_counts.extend([0 for _ in range(extra)])
@@ -149,6 +152,10 @@ def main():
         "-f", "--fps", type=float, default=15.0,
         help="비디오 FPS (기본값: 15.0)"
     )
+    parser.add_argument(
+        "-b", "--blur-strength", type=float, default=0.01,
+        help="블러 강도 (기본값: 0.01, 범위: 0.01-1.0)"
+    )
 
     args = parser.parse_args()
     
@@ -165,7 +172,7 @@ def main():
     video_codec = 'mp4v'
     output_dir = 'output'
     num_cameras = 2
-    blur_strength = 0.01
+    blur_strength = args.blur_strength
 
     # 저장 설정 확인
     save_original = args.save or args.save_original
@@ -183,6 +190,7 @@ def main():
     print(f"   - 신뢰도 임계값: {confidence_threshold}")
     print(f"   - 탐지 간격: {interval}프레임")
     print(f"   - 블러 강도: {blur_strength}")
+    print(f"   - 성능 통계: {'활성화' if not args.no_stats else '비활성화'} ({args.stats_interval}초 간격)" if not args.no_stats else "   - 성능 통계: 비활성화")
     print(f"   - 카메라 개수: {num_cameras}")
     print(f"   - 비디오 FPS: {video_fps}")
     print(f"   - 비디오 코덱: {video_codec}")

@@ -4,6 +4,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# engine
+*.engine
+
+# media
+*.mp4
+
 # C extensions
 *.so
 
