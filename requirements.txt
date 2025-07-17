@@ -14,6 +14,9 @@ numpy>=1.24.0
 # psutil - 시스템 리소스 모니터링 (CPU, RAM)
 psutil>=5.9.0
 
+# python-dotenv - 환경변수 관리 (.env 파일 지원)
+python-dotenv>=1.0.0
+
 # === 선택적 패키지 ===
 # GPUtil - GPU 모니터링 (NVIDIA GPU가 있는 경우)
 # 설치 안되어도 프로그램은 정상 동작함
