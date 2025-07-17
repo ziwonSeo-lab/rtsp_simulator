@@ -77,38 +77,79 @@
 # 1. 저장소 클론
 git clone <repository-url>
 cd rtsp_simulator
+
+# 2. 가상환경 생성 및 활성화
+python -m venv env-blur
+source env-blur/bin/activate  # Linux/macOS
+# env-blur\Scripts\activate     # Windows
+
+# 3. 원클릭 AI 패키지 설치 🎯
+./install_ai_packages.sh
 ```
 
 ### 2. 프로젝트 구조 확인
 ```
 rtsp_simulator/
 ├── rtsp_simulator_ffmpeg_v2.py  # 메인 프로그램
+├── install_ai_packages.sh       # 🆕 원클릭 AI 패키지 설치 스크립트
+├── requirements.txt             # Python 패키지 종속성
 ├── media/                       # 입력 비디오 파일 폴더
 │   ├── README.md               # 사용법 안내
 │   └── .gitkeep               # Git 추적용
 ├── output/                     # 출력 비디오 파일 폴더  
 │   ├── README.md              # 출력 구조 안내
 │   └── .gitkeep              # Git 추적용
+├── blur_module/                # AI 블러 모듈 (선택사항)
+│   ├── ipcamera_blur.py       # 블러 모듈 예시
+│   └── models/                # AI 모델 파일들
 ├── README.md                  # 프로젝트 문서
 ├── .gitignore                # Git 무시 파일
 └── .gitmessage.txt          # 커밋 메시지 템플릿
 ```
 
-### 3. Python 패키지 설치
+### 🛠️ 방법 2: 수동 설치
+
 ```bash
-pip install opencv-python
-pip install pillow
-pip install numpy
-pip install psutil
-pip install GPUtil  # GPU 모니터링용 (선택사항)
+# 1. 기본 패키지 설치
+pip install -r requirements.txt
+
+# 2. PyTorch CUDA 12.1 설치
+pip install torch==2.5.1+cu121 torchvision==0.20.1+cu121 \
+            --index-url https://download.pytorch.org/whl/cu121
+
+# 3. 시스템 의존성 (Ubuntu/Debian)
+sudo apt-get install -y cmake ffmpeg
+
+# 4. TensorRT 설치 (NVIDIA GPU)
+pip install tensorrt-cu12==10.0.1 \
+            tensorrt-cu12-bindings==10.0.1 \
+            tensorrt-cu12-libs==10.0.1 \
+            --extra-index-url https://pypi.ngc.nvidia.com
+
+# 5. YOLO 업그레이드
+pip install --upgrade ultralytics
 ```
 
-### 4. FFmpeg 설치
+### 3. FFmpeg 설치
+
+#### Linux (Ubuntu/Debian)
+```bash
+sudo apt-get update
+sudo apt-get install -y ffmpeg
+```
+
+#### macOS
+```bash
+# Homebrew를 사용하여 설치
+brew install ffmpeg
+```
+
 #### Windows
 1. [FFmpeg 다운로드](https://ffmpeg.org/download.html)
 2. 압축 해제 후 환경변수 PATH에 추가
 
-#### macOS
+### 🔍 설치 확인
+
 ```bash
 # GPU 확인
 python -c "import GPUtil; print(f'GPU: {len(GPUtil.getGPUs())}개 감지')"
@@ -118,6 +159,9 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
 
 # TensorRT 확인 (선택사항)
 python -c "import tensorrt; print(f'TensorRT: {tensorrt.__version__}')"
+
+# FFmpeg 확인
+ffmpeg -version
 ```
 
 ## 🚀 사용 방법
@@ -349,7 +393,7 @@ rtsp_simulator/
 - [ ] **모션 감지**: 이벤트 기반 녹화
 - [ ] **클러스터링**: 분산 처리 지원
 
-## �� 라이센스
+## 📄 라이센스
 
 이 프로젝트는 MIT 라이센스 하에 배포됩니다.
 
