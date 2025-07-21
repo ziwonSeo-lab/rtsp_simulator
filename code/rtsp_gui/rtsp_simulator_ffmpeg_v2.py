@@ -1045,10 +1045,10 @@ class RTSPProcessor:
         except Exception as e:
             logger.error(f"쓰레드 {thread_id}: 프레임 처리 오류 - {e}")
             
-            # 고성능 모드가 아닌 경우에만 통계 업데이트
+            # 🆕 기본 통계는 항상, 세부 통계는 고성능 모드가 아닌 경우에만
+            self.frame_counter.increment_error()  # 전체 통계는 항상 업데이트
             if not self.config.high_performance_mode:
-                self.frame_counter.increment_error()  # 전체 통계 업데이트
-                self.thread_stats[thread_id].increment_error()  # 쓰레드별 통계 업데이트
+                self.thread_stats[thread_id].increment_error()  # 스레드별 통계는 고성능 모드에서 제외
                 
                 # 🆕 오류 발생 시에도 성능 측정 종료
                 self.performance_profiler.end_profile("frame_processing", thread_id)
@@ -1420,10 +1420,10 @@ class RTSPProcessor:
                 
                 if not ret:
                     logger.warning(f"쓰레드 {thread_id}: 프레임 읽기 실패 ({source_name})")
-                    # 고성능 모드가 아닌 경우에만 통계 업데이트
+                    # 🆕 기본 통계는 항상, 세부 통계는 고성능 모드가 아닌 경우에만
+                    self.frame_counter.increment_lost()  # 전체 통계는 항상 업데이트
                     if not self.config.high_performance_mode:
-                        self.frame_counter.increment_lost()  # 전체 통계 업데이트
-                        self.thread_stats[thread_id].increment_lost()  # 쓰레드별 통계 업데이트
+                        self.thread_stats[thread_id].increment_lost()  # 스레드별 통계는 고성능 모드에서 제외
                     consecutive_failures += 1
                     
                     if consecutive_failures > 10:
@@ -1447,20 +1447,21 @@ class RTSPProcessor:
                     if elapsed_time >= self.config.max_duration_seconds:
                         break
                 
-                # 프레임 통계 업데이트 (고성능 모드가 아닌 경우에만)
+                # 🆕 프레임 통계 업데이트 (기본 통계는 항상, 세부 통계는 고성능 모드가 아닌 경우에만)
+                self.frame_counter.increment_received()  # 전체 통계는 항상 업데이트
                 if not self.config.high_performance_mode:
-                    self.frame_counter.increment_received()
-                    self.thread_stats[thread_id].increment_received()
+                    self.thread_stats[thread_id].increment_received()  # 스레드별 통계는 고성능 모드에서 제외
                     self.connection_status[thread_id]['last_frame_time'] = time.time()
                 
                 # 프레임 처리
                 processed_frame = self.process_frame(frame, thread_id)
                 
-                # 프레임 로스 시뮬레이션 (고성능 모드가 아닌 경우에만)
-                if not self.config.high_performance_mode and random.random() < self.config.frame_loss_rate:
-                    self.frame_counter.increment_lost()
-                    self.thread_stats[thread_id].increment_lost()
-                    logger.debug(f"쓰레드 {thread_id}: 프레임 {frames_received} 시뮬레이션 손실 ({source_name})")
+                # 🆕 프레임 로스 시뮬레이션 (기본 통계는 항상, 로깅은 고성능 모드가 아닌 경우에만)
+                if random.random() < self.config.frame_loss_rate:
+                    self.frame_counter.increment_lost()  # 전체 통계는 항상 업데이트
+                    if not self.config.high_performance_mode:
+                        self.thread_stats[thread_id].increment_lost()  # 스레드별 통계는 고성능 모드에서 제외
+                        logger.debug(f"쓰레드 {thread_id}: 프레임 {frames_received} 시뮬레이션 손실 ({source_name})")
                     continue
                 
                 # 처리된 프레임을 미리보기 큐에 추가 (미리보기가 활성화된 경우에만)
@@ -1498,10 +1499,10 @@ class RTSPProcessor:
                 
             except Exception as e:
                 logger.error(f"쓰레드 {thread_id}: 예상치 못한 오류 - {e}")
-                # 고성능 모드가 아닌 경우에만 통계 업데이트
+                # 🆕 기본 통계는 항상, 세부 통계는 고성능 모드가 아닌 경우에만
+                self.frame_counter.increment_error()  # 전체 통계는 항상 업데이트
                 if not self.config.high_performance_mode:
-                    self.frame_counter.increment_error()  # 전체 통계 업데이트
-                    self.thread_stats[thread_id].increment_error()  # 쓰레드별 통계 업데이트
+                    self.thread_stats[thread_id].increment_error()  # 스레드별 통계는 고성능 모드에서 제외
                 time.sleep(1)
         
         # 정리
@@ -1635,6 +1636,12 @@ class RTSPProcessorGUI:
         self.blur_enabled = True  # 블러 처리 활성화 상태
         self.high_performance_enabled = False  # 고성능 모드 활성화 상태
         self.overlay_enabled = True  # 오버레이 활성화 상태
+        
+        # 🆕 FPS 계산 개선을 위한 변수들
+        self.processor_start_time = None  # 실제 프로세서 시작 시간
+        self.fps_history = []  # 실시간 FPS 이력
+        self.last_frame_count = 0
+        self.last_fps_time = 0
         
         # 프로젝트 기본 폴더 생성
         self.create_project_folders()
@@ -2945,12 +2952,20 @@ VBR: 가변 비트레이트 (효율적)
             )
             
             self.processor = RTSPProcessor(self.config)
+            
+            # 🆕 정확한 프로세서 시작 시간 기록 (processor.start() 직전)
+            self.processor_start_time = time.time()
             self.processor.start()
+            
+            # 🆕 FPS 계산을 위한 변수들 초기화
+            self.fps_history = []
+            self.last_frame_count = 0
+            self.last_fps_time = self.processor_start_time
             
             # 쓰레드별 미리보기 UI 생성
             self.create_thread_previews()
             
-            self.start_time = time.time()
+            self.start_time = time.time()  # GUI 시작 시간 (호환성 유지)
             self.running = True
             
             self.start_button.config(state=tk.DISABLED)
@@ -3060,6 +3075,12 @@ VBR: 가변 비트레이트 (효율적)
         self.overlay_toggle_button.config(text="📍 오버레이 끄기")
         self.overlay_enabled_var.set(True)
         
+        # 🆕 FPS 계산 변수들 초기화
+        self.processor_start_time = None
+        self.fps_history = []
+        self.last_frame_count = 0
+        self.last_fps_time = 0
+        
         self.log_message("소스 프로세서 중지됨")
     
     def reset_statistics(self):
@@ -3067,6 +3088,14 @@ VBR: 가변 비트레이트 (효율적)
         if self.processor:
             self.processor.reset_statistics()
             self.start_time = time.time()
+            
+            # 🆕 FPS 계산 변수들도 초기화
+            if hasattr(self, 'processor_start_time'):
+                self.processor_start_time = time.time()
+                self.fps_history = []
+                self.last_frame_count = 0
+                self.last_fps_time = self.processor_start_time
+            
             self.log_message("통계 초기화됨")
     
     def create_thread_previews(self):
@@ -3176,8 +3205,11 @@ VBR: 가변 비트레이트 (효율적)
             
         stats = self.processor.get_statistics()
         
-        # 실행 시간 계산
-        runtime = time.time() - self.start_time if self.start_time else 0
+        # 🆕 정확한 실행 시간 계산 (프로세서 시작 시간 기준)
+        if hasattr(self, 'processor_start_time') and self.processor_start_time:
+            runtime = time.time() - self.processor_start_time
+        else:
+            runtime = time.time() - self.start_time if self.start_time else 0
         
         # 전체 통계 라벨 업데이트
         self.stats_labels['received_frames'].config(text=str(stats['received_frames']))
@@ -3189,24 +3221,74 @@ VBR: 가변 비트레이트 (효율적)
         self.stats_labels['processing_rate'].config(text=f"{stats['processing_rate']:.2f}")
         self.stats_labels['save_rate'].config(text=f"{stats['save_rate']:.2f}")
         
-        # 초당 처리 프레임수 계산
+        # 🆕 개선된 FPS 계산 (전체 평균 + 실시간 FPS)
         if runtime > 0 and stats['processed_frames'] > 0:
-            processing_fps = stats['processed_frames'] / runtime
-            fps_text = f"{processing_fps:.1f} FPS"
-            # 색상으로 성능 표시
-            if self.config and hasattr(self.config, 'input_fps'):
-                target_fps = self.config.input_fps
-                if processing_fps >= target_fps * 0.9:
-                    fps_color = "green"
-                elif processing_fps >= target_fps * 0.5:
-                    fps_color = "orange" 
+            # 전체 평균 FPS
+            avg_fps = stats['processed_frames'] / runtime
+            
+            # 실시간 FPS 계산 (최근 1초간)
+            current_time = time.time()
+            current_frames = stats['processed_frames']
+            
+            if hasattr(self, 'last_fps_time') and self.last_fps_time > 0:
+                time_diff = current_time - self.last_fps_time
+                frame_diff = current_frames - self.last_frame_count
+                
+                if time_diff >= 1.0:  # 1초마다 실시간 FPS 계산
+                    realtime_fps = frame_diff / time_diff if time_diff > 0 else 0
+                    
+                    # FPS 이력 관리 (최근 10초)
+                    self.fps_history.append(realtime_fps)
+                    if len(self.fps_history) > 10:
+                        self.fps_history.pop(0)
+                    
+                    # 다음 계산을 위해 업데이트
+                    self.last_fps_time = current_time
+                    self.last_frame_count = current_frames
+                    
+                    # 평균 FPS와 실시간 FPS 표시 (평균이 앞에)
+                    fps_text = f"평균: {avg_fps:.1f} FPS (실시간: {realtime_fps:.1f})"
+                    
+                    # 색상은 실시간 FPS 기준으로 설정
+                    if self.config and hasattr(self.config, 'input_fps'):
+                        target_fps = self.config.input_fps
+                        if realtime_fps >= target_fps * 0.9:
+                            fps_color = "green"
+                        elif realtime_fps >= target_fps * 0.5:
+                            fps_color = "orange" 
+                        else:
+                            fps_color = "red"
+                    else:
+                        fps_color = "blue"
                 else:
-                    fps_color = "red"
+                    # 1초가 지나지 않았으면 이전 값 유지하고 평균만 업데이트
+                    if len(self.fps_history) > 0:
+                        last_realtime_fps = self.fps_history[-1]
+                        fps_text = f"평균: {avg_fps:.1f} FPS (실시간: {last_realtime_fps:.1f})"
+                        # 색상도 실시간 FPS 기준
+                        if self.config and hasattr(self.config, 'input_fps'):
+                            target_fps = self.config.input_fps
+                            if last_realtime_fps >= target_fps * 0.9:
+                                fps_color = "green"
+                            elif last_realtime_fps >= target_fps * 0.5:
+                                fps_color = "orange" 
+                            else:
+                                fps_color = "red"
+                        else:
+                            fps_color = "blue"
+                    else:
+                        fps_text = f"평균: {avg_fps:.1f} FPS (초기화 중)"
+                        fps_color = "gray"
             else:
-                fps_color = "blue"
+                # 초기화
+                self.last_fps_time = current_time
+                self.last_frame_count = current_frames
+                fps_text = f"평균: {avg_fps:.1f} FPS (초기화 중)"
+                fps_color = "gray"
+            
             self.stats_labels['processing_fps'].config(text=fps_text, foreground=fps_color)
         else:
-            self.stats_labels['processing_fps'].config(text="0.0 FPS", foreground="gray")
+            self.stats_labels['processing_fps'].config(text="평균: 0.0 FPS (대기 중)", foreground="gray")
         
         self.stats_labels['thread_count'].config(text=str(stats['thread_count']))
         self.stats_labels['queue_size'].config(text=str(stats['queue_size']))
