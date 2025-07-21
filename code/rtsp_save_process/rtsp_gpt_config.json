@@ -1,0 +1,14 @@
+
+  {
+    "file": "./raw_videos/media1.mp4",                    
+    "output_dir": "./recordings",
+    "segment_duration": 30,          
+    "fps": 15,
+    "width": 1280,
+    "height": 720,
+    "codec": "mp4v",
+    "retry_delay": 2,
+    "max_retry": 0,                  
+    "loop_file": true                
+  }
+  
