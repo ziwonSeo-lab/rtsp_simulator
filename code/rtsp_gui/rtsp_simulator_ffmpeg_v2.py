@@ -859,7 +859,7 @@ class RTSPProcessor:
             # HeadBlurrer 클래스가 있는지 확인하고 인스턴스 생성
             if hasattr(blur_module, 'HeadBlurrer'):
                 # 스레드별로 개별 HeadBlurrer 인스턴스 생성
-                head_blurrer = blur_module.HeadBlurrer(num_camera=1)
+                head_blurrer = blur_module.HeadBlurrer()
                 
                 # apply_blur 메서드를 가진 래퍼 객체 생성
                 class BlurWrapper:
