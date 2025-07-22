@@ -867,7 +867,7 @@ class RTSPProcessor:
                         self.head_blurrer = head_blurrer
                     
                     def apply_blur(self, frame, thread_id):
-                        return self.head_blurrer.process_frame(frame, 0)  # camera_index는 0으로 고정
+                        return self.head_blurrer.process_frame(frame)
                 
                 self.blur_modules[thread_id] = BlurWrapper(head_blurrer)
                 logger.info(f"스레드 {thread_id}: 블러 모듈(HeadBlurrer) 인스턴스 로드 성공")
