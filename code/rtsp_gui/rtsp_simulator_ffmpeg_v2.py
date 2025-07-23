@@ -167,7 +167,7 @@ class FrameCounter:
                 'error_frames': self.error_frames,
                 'total_frames': self.total_frames,
                 'loss_rate': self.lost_frames / max(self.total_frames, 1) * 100,
-                'processing_rate': self.processed_frames / max(self.received_frames, 1) * 100,
+                'processing_rate': self.processed_frames / max(self.total_frames, 1) * 100,
                 'save_rate': self.saved_frames / max(self.processed_frames, 1) * 100
             }
     
