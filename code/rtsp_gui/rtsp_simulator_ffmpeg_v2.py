@@ -124,7 +124,8 @@ class RTSPConfig:
     blur_enabled: bool = True  # 블러 처리 활성화
     # 고성능 모드 설정
     high_performance_mode: bool = False  # 고성능 모드 (모든 오버헤드 제거)
-
+    blur_interval: int = 1  # 블러 처리 간격
+    
 class FrameCounter:
     """프레임 카운터 클래스"""
     def __init__(self):
@@ -958,8 +959,8 @@ class RTSPProcessor:
             
             # 영상 처리가 활성화된 경우에만 처리
             if self.config.enable_processing:
-                # 🆕 블러 처리 (블러가 활성화된 경우에만)
-                if self.config.blur_enabled:
+                # 🆕 블러 처리 (블러가 활성화된 경우에만, 간격에 따라 처리)
+                if self.config.blur_enabled and (self.frame_count[thread_id] % self.config.blur_interval == 0):
                     # 🆕 블러 처리 성능 측정 시작 (고성능 모드가 아닌 경우에만)
                     if not self.config.high_performance_mode:
                         self.performance_profiler.start_profile("blur_processing", thread_id)
@@ -968,7 +969,7 @@ class RTSPProcessor:
                     if thread_id in self.blur_modules and hasattr(self.blur_modules[thread_id], 'apply_blur'):
                         try:
                             processed_frame = self.blur_modules[thread_id].apply_blur(processed_frame, thread_id)
-                            logger.debug(f"쓰레드 {thread_id}: 사용자 블러 처리 완료")
+                            logger.debug(f"쓰레드 {thread_id}: 사용자 블러 처리 완료 (프레임 {self.frame_count[thread_id]})")
                         except Exception as e:
                             logger.error(f"쓰레드 {thread_id}: 사용자 블러 처리 오류 - {e}")
                             # 블러 처리 실패 시 기본 처리
@@ -982,6 +983,9 @@ class RTSPProcessor:
                     # 🆕 블러 처리 성능 측정 종료 (고성능 모드가 아닌 경우에만)
                     if not self.config.high_performance_mode:
                         self.performance_profiler.end_profile("blur_processing", thread_id)
+                elif self.config.blur_enabled:
+                    # 블러가 활성화되었지만 간격에 맞지 않는 경우, 블러 처리 건너뛰기
+                    logger.debug(f"쓰레드 {thread_id}: 블러 처리 건너뛰기 (간격: {self.config.blur_interval}, 프레임: {self.frame_count[thread_id]})")
                 else:
                     # 블러 비활성화 시 원본 프레임 사용
                     logger.debug(f"쓰레드 {thread_id}: 블러 처리 비활성화됨")
@@ -1764,12 +1768,18 @@ class RTSPProcessorGUI:
         self.blur_enabled_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(blur_frame, text="🎯 블러 처리 활성화", variable=self.blur_enabled_var, command=self.on_blur_checkbox_change).grid(row=1, column=0, sticky=tk.W, pady=2)
         
+        # 블러 처리 간격 설정
+        ttk.Label(blur_frame, text="블러 처리 간격 (프레임):").grid(row=1, column=1, sticky=tk.W, pady=2, padx=(20, 0))
+        self.blur_interval_var = tk.IntVar(value=1)
+        blur_interval_spinbox = ttk.Spinbox(blur_frame, from_=1, to=30, width=10, textvariable=self.blur_interval_var)
+        blur_interval_spinbox.grid(row=1, column=2, sticky=tk.W, pady=2, padx=(5, 0))
+        
         # 고성능 모드 체크박스
         self.high_performance_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(blur_frame, text="⚡ 고성능 모드 (모든 오버헤드 제거)", variable=self.high_performance_var, command=self.on_performance_checkbox_change).grid(row=2, column=0, sticky=tk.W, pady=2)
         
         blur_info = ttk.Label(blur_frame, 
-                             text="※ apply_blur(frame) 함수가 있는 Python 파일을 선택하세요. 없으면 기본 블러 처리됩니다.", 
+                             text="※ apply_blur(frame) 함수가 있는 Python 파일을 선택하세요. 없으면 기본 블러 처리됩니다. 블러 간격: 1=모든 프레임, 2=2프레임마다, 3=3프레임마다...", 
                              font=("TkDefaultFont", 8), foreground="blue")
         blur_info.grid(row=3, column=0, columnspan=3, sticky=tk.W, pady=(5, 0))
 
@@ -2947,6 +2957,7 @@ VBR: 가변 비트레이트 (효율적)
                 preview_enabled=self.preview_enabled,
                 # 블러 설정
                 blur_enabled=self.blur_enabled_var.get(),
+                blur_interval=self.blur_interval_var.get(),
                 # 고성능 모드 설정
                 high_performance_mode=self.high_performance_var.get()
             )
@@ -2990,7 +3001,10 @@ VBR: 가변 비트레이트 (효율적)
             
             # 블러 처리 상태 출력
             if self.config.blur_enabled:
-                self.log_message("🎯 블러 처리 활성화됨")
+                if self.config.blur_interval == 1:
+                    self.log_message("🎯 블러 처리 활성화됨 (모든 프레임)")
+                else:
+                    self.log_message(f"🎯 블러 처리 활성화됨 ({self.config.blur_interval}프레임마다)")
             else:
                 self.log_message("⭕ 블러 처리 비활성화됨 (성능 최적화)")
             
@@ -3064,6 +3078,7 @@ VBR: 가변 비트레이트 (효율적)
         self.blur_enabled = True
         self.blur_toggle_button.config(text="🎯 블러 끄기")
         self.blur_enabled_var.set(True)
+        self.blur_interval_var.set(1)  # 블러 간격을 기본값으로 리셋
         
         # 고성능 모드 버튼을 기본 상태로 리셋
         self.high_performance_enabled = False
