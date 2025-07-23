@@ -5,24 +5,35 @@ import os
 import argparse
 from ultralytics import YOLO
 import numpy as np
+import csv
+import json
 
 class HeadBlurrer:
-    def __init__(self, model_path="/home/koast-user/rtsp_simulator/blur_module/best_re_final.engine", num_camera=1, conf_threshold=0.5):
+    def __init__(self, model_path="/home/koast-user/rtsp_simulator/blur_module/best_re_final.engine", conf_threshold=0.5, enable_face_counting=False):
         """
         HeadBlurrer 초기화
         
         Args:
             model_path (str): PyTorch 모델 파일 경로
+            enable_face_counting (bool): 얼굴 탐지 수 기록 기능 활성화
         """
         self.model_path = model_path
         self.conf_threshold = conf_threshold  # 탐지 신뢰도 임계값
+        self.enable_face_counting = enable_face_counting
         
         # 모델 로드
         self.model = self._load_model()
         print(f"✅ 모델 로드 완료: {model_path}")
         
-        self.frame_counts = [0 for i in range(num_camera)]
-        self.last_head_boxes = [[] for i in range(num_camera)]
+        # 단일 카메라용 변수들
+        self.frame_count = 0
+        self.last_head_boxes = []
+        
+        # 얼굴 탐지 기록용 (테스트 기능)
+        if self.enable_face_counting:
+            self.detection_records = []  # 각 프레임의 탐지 정보 저장
+            self.stats = {}  # 카메라별 통계
+            print("🔍 얼굴 탐지 수 기록 기능 활성화")
     
     def _load_model(self):
         """PyTorch YOLO 모델 로드"""
@@ -65,6 +76,100 @@ class HeadBlurrer:
         except Exception as e:
             print(f"⚠️  머리 탐지 중 오류: {e}")
             return []
+
+    def _record_detection(self, frame_number, face_count, detection_performed=False):
+        """
+        얼굴 탐지 정보 기록 (테스트 기능)
+        
+        Args:
+            frame_number: 프레임 번호
+            face_count: 탐지된 얼굴 수
+            detection_performed: 실제 탐지를 수행했는지 여부 (간격 탐지용)
+        """
+        if not self.enable_face_counting:
+            return
+            
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        
+        record = {
+            'timestamp': timestamp,
+            'frame_number': frame_number,
+            'face_count': face_count,
+            'detection_performed': detection_performed,
+            'confidence_threshold': self.conf_threshold
+        }
+        
+        self.detection_records.append(record)
+        
+        # 통계 업데이트 (단일 카메라용)
+        if not hasattr(self, 'stats'):
+            self.stats = {
+                'total_frames': 0,
+                'total_faces': 0,
+                'detection_frames': 0,
+                'max_faces': 0,
+                'avg_faces': 0.0
+            }
+        
+        self.stats['total_frames'] += 1
+        self.stats['total_faces'] += face_count
+        if detection_performed:
+            self.stats['detection_frames'] += 1
+        self.stats['max_faces'] = max(self.stats['max_faces'], face_count)
+        self.stats['avg_faces'] = self.stats['total_faces'] / self.stats['total_frames']
+
+    def save_detection_records(self, output_dir="output", filename_prefix="face_detection"):
+        """
+        얼굴 탐지 기록을 파일로 저장 (테스트 기능)
+        
+        Args:
+            output_dir: 저장 디렉토리
+            filename_prefix: 파일명 접두사
+        """
+        if not self.enable_face_counting or not self.detection_records:
+            print("⚠️ 저장할 얼굴 탐지 기록이 없습니다.")
+            return
+            
+        # 출력 디렉토리 생성
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # CSV 파일로 상세 기록 저장
+        csv_filename = f"{filename_prefix}_details_{timestamp}.csv"
+        csv_path = os.path.join(output_dir, csv_filename)
+        
+        with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+            fieldnames = ['timestamp', 'frame_number', 'face_count', 'detection_performed', 'confidence_threshold']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(self.detection_records)
+            
+        # JSON 파일로 통계 저장
+        json_filename = f"{filename_prefix}_stats_{timestamp}.json"
+        json_path = os.path.join(output_dir, json_filename)
+        
+        summary_data = {
+            'generation_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'total_records': len(self.detection_records),
+            'camera_statistics': self.stats,
+            'overall_stats': {
+                'total_frames_all_cameras': self.stats['total_frames'],
+                'total_faces_all_cameras': self.stats['total_faces'],
+                'cameras_count': 1 # 단일 카메라
+            }
+        }
+        
+        with open(json_path, 'w', encoding='utf-8') as jsonfile:
+            json.dump(summary_data, jsonfile, indent=2, ensure_ascii=False)
+            
+        print(f"📊 얼굴 탐지 기록 저장 완료:")
+        print(f"   - 상세 기록: {csv_path} ({len(self.detection_records)}개 레코드)")
+        print(f"   - 통계 요약: {json_path}")
+        
+        # 간단한 통계 출력
+        print(f"   - 카메라 통계: {self.stats['total_frames']}프레임, 평균 {self.stats['avg_faces']:.1f}명, 최대 {self.stats['max_faces']}명")
     
     def _apply_blur_to_heads(self, image, head_boxes, blur_strength=0.01):
         """
@@ -108,21 +213,26 @@ class HeadBlurrer:
         
         return result_image
 
-    def process_frame(self, frame, index_camera, frame_interval=1, blur_strength=0.01):
+    def process_frame(self, frame, frame_interval=1, blur_strength=0.01):
         """
         n 프레임마다 탐지 수행, 그 외에는 이전 탐지 결과 사용
         """
-        if index_camera >= len(self.frame_counts):
-            extra = index_camera - len(self.frame_counts) + 1
-            self.frame_counts.extend([0 for _ in range(extra)])
-            self.last_head_boxes.extend([] for _ in range(extra))
-        
-        if self.frame_counts[index_camera] % frame_interval == 0:
-            self.last_head_boxes[index_camera] = self._detect_heads(frame)
+        detection_performed = False
+        if self.frame_count % frame_interval == 0:
+            self.last_head_boxes = self._detect_heads(frame)
+            detection_performed = True
             
-        self.frame_counts[index_camera] += 1
+        # 얼굴 탐지 기록 (테스트 기능)
+        face_count = len(self.last_head_boxes)
+        self._record_detection(
+            frame_number=self.frame_count,
+            face_count=face_count,
+            detection_performed=detection_performed
+        )
+            
+        self.frame_count += 1
 
-        blurred_frame = self._apply_blur_to_heads(frame, self.last_head_boxes[index_camera], blur_strength)
+        blurred_frame = self._apply_blur_to_heads(frame, self.last_head_boxes, blur_strength)
         return blurred_frame
 
 def main():
@@ -156,6 +266,16 @@ def main():
         "-b", "--blur-strength", type=float, default=0.01,
         help="블러 강도 (기본값: 0.01, 범위: 0.01-1.0)"
     )
+    
+    # 얼굴 탐지 기록 기능 (테스트용)
+    parser.add_argument(
+        "--enable-face-counting", action="store_true",
+        help="얼굴 탐지 수 기록 기능 활성화 (테스트용)"
+    )
+    parser.add_argument(
+        "--face-count-output", type=str, default="output",
+        help="얼굴 탐지 기록 저장 디렉토리 (기본값: output)"
+    )
 
     args = parser.parse_args()
     
@@ -164,15 +284,15 @@ def main():
     
     model_path = '/home/koast-user/rtsp_simulator/blur_module/best_re_final.engine'
     confidence_threshold = args.confidence
-    rtsp_url_1 = 'rtsp://root:root@192.168.1.101:554/cam0_0'
-    rtsp_url_2 = 'rtsp://root:root@192.168.1.102:554/cam0_1'
+    rtsp_url = 'rtsp://root:root@192.168.1.101:554/cam0_0'  # 단일 카메라
     
     # 비디오/카메라 설정
     video_fps = args.fps
     video_codec = 'mp4v'
     output_dir = 'output'
-    num_cameras = 2
     blur_strength = args.blur_strength
+    enable_face_counting = args.enable_face_counting
+    face_count_output_dir = args.face_count_output
 
     # 저장 설정 확인
     save_original = args.save or args.save_original
@@ -190,13 +310,13 @@ def main():
     print(f"   - 신뢰도 임계값: {confidence_threshold}")
     print(f"   - 탐지 간격: {interval}프레임")
     print(f"   - 블러 강도: {blur_strength}")
-    print(f"   - 성능 통계: {'활성화' if not args.no_stats else '비활성화'} ({args.stats_interval}초 간격)" if not args.no_stats else "   - 성능 통계: 비활성화")
-    print(f"   - 카메라 개수: {num_cameras}")
+    print(f"   - 얼굴 탐지 기록: {'활성화' if enable_face_counting else '비활성화'}")
+    if enable_face_counting:
+        print(f"   - 기록 저장 경로: {face_count_output_dir}")
     print(f"   - 비디오 FPS: {video_fps}")
     print(f"   - 비디오 코덱: {video_codec}")
     print(f"   - 출력 디렉토리: {output_dir}")
-    print(f"   - 카메라 1: {rtsp_url_1}")
-    print(f"   - 카메라 2: {rtsp_url_2}")
+    print(f"   - 카메라: {rtsp_url}")
     print(f"   - 저장 모드: {'활성화' if save_enabled else '비활성화'}")
     if save_enabled:
         save_types = []
@@ -206,26 +326,24 @@ def main():
             save_types.append("블러")
         print(f"   - 저장 타입: {', '.join(save_types)}")
 
-    cap1 = cv2.VideoCapture(rtsp_url_1)
-    cap2 = cv2.VideoCapture(rtsp_url_2)
-    blurrer = HeadBlurrer(model_path=model_path, num_camera=num_cameras)
-    blurrer.conf_threshold = confidence_threshold
+    cap = cv2.VideoCapture(rtsp_url)
+    blurrer = HeadBlurrer(
+        model_path=model_path, 
+        conf_threshold=confidence_threshold,
+        enable_face_counting=enable_face_counting
+    )
 
-    if not cap1.isOpened() or not cap2.isOpened():
+    if not cap.isOpened():
         print("카메라 스트림을 열 수 없습니다.")
         return
         
     # 저장 관련 변수 초기화
-    out1_original = None
-    out2_original = None
-    out1_blurred = None
-    out2_blurred = None
+    out_original = None
+    out_blurred = None
 
-    width1 = int(cap1.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height1 = int(cap1.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    width2 = int(cap2.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height2 = int(cap2.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fourcc = cv2.VideoWriter_fourcc(*video_codec)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fourcc = cv2.VideoWriter.fourcc(*video_codec)
 
     # 저장이 활성화된 경우 VideoWriter 설정
     if save_enabled:
@@ -233,81 +351,74 @@ def main():
         print(f"📹 영상 저장 시작: {now}")
         
         if save_original:
-            out1_original = cv2.VideoWriter(
-                os.path.join(output_dir, f"cam1_original_{now}.mp4"), 
-                fourcc, video_fps, (width1, height1)
+            out_original = cv2.VideoWriter(
+                os.path.join(output_dir, f"cam_original_{now}.mp4"), 
+                fourcc, video_fps, (width, height)
             )
-            out2_original = cv2.VideoWriter(
-                os.path.join(output_dir, f"cam2_original_{now}.mp4"), 
-                fourcc, video_fps, (width2, height2)
-            )
-            print(f"   - 원본 영상: cam1_original_{now}.mp4, cam2_original_{now}.mp4")
+            print(f"   - 원본 영상: cam_original_{now}.mp4")
             
         if save_blurred:
-            out1_blurred = cv2.VideoWriter(
-                os.path.join(output_dir, f"cam1_blurred_{now}.mp4"), 
-                fourcc, video_fps, (width1, height1)
+            out_blurred = cv2.VideoWriter(
+                os.path.join(output_dir, f"cam_blurred_{now}.mp4"), 
+                fourcc, video_fps, (width, height)
             )
-            out2_blurred = cv2.VideoWriter(
-                os.path.join(output_dir, f"cam2_blurred_{now}.mp4"), 
-                fourcc, video_fps, (width2, height2)
-            )
-            print(f"   - 블러 영상: cam1_blurred_{now}.mp4, cam2_blurred_{now}.mp4")
+            print(f"   - 블러 영상: cam_blurred_{now}.mp4")
 
-    while True:
-        ret1, frame1 = cap1.read()
-        ret2, frame2 = cap2.read()
-        
-        if not ret1 or not ret2:
-            print("프레임을 읽을 수 없습니다.")
-            break
-
-        blurred_1 = blurrer.process_frame(frame1, index_camera=1, frame_interval=interval, blur_strength=blur_strength)
-        blurred_2 = blurrer.process_frame(frame2, index_camera=2, frame_interval=interval, blur_strength=blur_strength)
-        cv2.imshow("IP Camera Stream 1", blurred_1)
-        cv2.imshow("IP Camera Stream 2", blurred_2)
-        
-        # 저장이 활성화된 경우 프레임 저장
-        if save_enabled:
-            if save_original and out1_original and out2_original:
-                out1_original.write(frame1)
-                out2_original.write(frame2)
+    try:
+        while True:
+            ret, frame = cap.read()
             
-            if save_blurred and out1_blurred and out2_blurred:
-                out1_blurred.write(blurred_1)
-                out2_blurred.write(blurred_2)
-        
-        key = cv2.waitKey(1) & 0xFF
-        # 'q' 키로 종료
-        if key == ord('q'):
-            print("🔴 종료 신호 수신")
-            break
+            if not ret:
+                print("프레임을 읽을 수 없습니다.")
+                break
 
-    # 리소스 해제
-    print("🔄 리소스 정리 중...")
-    cap1.release()
-    cap2.release()
-    
-    # VideoWriter 해제 및 저장 완료 메시지
-    if save_enabled:
-        saved_files = []
-        if out1_original:
-            out1_original.release()
-            saved_files.extend([f"cam1_original_{now}.mp4", f"cam2_original_{now}.mp4"])
-        if out2_original:
-            out2_original.release()
-        if out1_blurred:
-            out1_blurred.release()
-            saved_files.extend([f"cam1_blurred_{now}.mp4", f"cam2_blurred_{now}.mp4"])
-        if out2_blurred:
-            out2_blurred.release()
+            blurred_frame = blurrer.process_frame(frame, frame_interval=interval, blur_strength=blur_strength)
+            cv2.imshow("IP Camera Stream", blurred_frame)
+            
+            # 저장이 활성화된 경우 프레임 저장
+            if save_enabled:
+                if save_original and out_original:
+                    out_original.write(frame)
+                
+                if save_blurred and out_blurred:
+                    out_blurred.write(blurred_frame)
+            
+            key = cv2.waitKey(1) & 0xFF
+            # 'q' 키로 종료
+            if key == ord('q'):
+                print("🔴 종료 신호 수신")
+                break
+                
+    except KeyboardInterrupt:
+        print("🔴 사용자 중단 (Ctrl+C)")
+    except Exception as e:
+        print(f"⚠️ 오류 발생: {e}")
+    finally:
+        # 얼굴 탐지 기록 저장 (테스트 기능)
+        if enable_face_counting:
+            print("💾 얼굴 탐지 기록 저장 중...")
+            blurrer.save_detection_records(output_dir=face_count_output_dir)
+
+        # 리소스 해제
+        print("🔄 리소스 정리 중...")
+        cap.release()
         
-        print(f"✅ 영상 저장 완료:")
-        for file in saved_files:
-            print(f"   - {os.path.join(output_dir, file)}")
-    
-    cv2.destroyAllWindows()
-    print("🏁 프로그램 종료")
+        # VideoWriter 해제 및 저장 완료 메시지
+        if save_enabled:
+            saved_files = []
+            if out_original:
+                out_original.release()
+                saved_files.append(f"cam_original_{now}.mp4")
+            if out_blurred:
+                out_blurred.release()
+                saved_files.append(f"cam_blurred_{now}.mp4")
+            
+            print(f"✅ 영상 저장 완료:")
+            for file in saved_files:
+                print(f"   - {os.path.join(output_dir, file)}")
+        
+        cv2.destroyAllWindows()
+        print("🏁 프로그램 종료")
 
 if __name__ == "__main__":
     main()
@@ -316,21 +427,60 @@ if __name__ == "__main__":
 # rtsp_simulator_ffmpeg.py가 동적 로딩하는 apply_blur 래퍼
 # ─────────────────────────────────────────────────────────────
 
-_blurrer_cache = {"obj": None}   
-       # 싱글턴 캐시
-import threading
-_blurrer = HeadBlurrer(model_path="/home/koast-user/rtsp_simulator/blur_module/best_re_final.engine", num_camera=1, conf_threshold=0.3)
-_thread2cam = {}  
+_blurrer = HeadBlurrer(
+    model_path="/home/koast-user/rtsp_simulator/blur_module/best_re_final.engine", 
+    conf_threshold=0.3,
+    enable_face_counting=False  # 기본적으로 비활성화
+)
 
 def apply_blur(frame,
-               index_camera: int = 1,
                frame_interval: int = 3,
                blur_strength: float = 0.01):
-
-    tid = threading.get_ident()
-    idx = _thread2cam.setdefault(tid, len(_thread2cam) + 1)  # 1‑base
+    """
+    단일 카메라용 블러 적용 함수
+    
+    Args:
+        frame: 입력 프레임
+        frame_interval: 탐지 간격
+        blur_strength: 블러 강도
+    
+    Returns:
+        블러 처리된 프레임
+    """
     return _blurrer.process_frame(
-        frame, index_camera=idx,
+        frame, 
         frame_interval=frame_interval,
         blur_strength=blur_strength,
     )
+
+def enable_face_counting_for_blurrer(enable=True, output_dir="output"):
+    """
+    단일 카메라용 얼굴 탐지 기록 기능 활성화/비활성화 (테스트용)
+    
+    Args:
+        enable (bool): 기능 활성화 여부
+        output_dir (str): 기록 저장 디렉토리
+    """
+    global _blurrer
+    _blurrer.enable_face_counting = enable
+    if enable:
+        _blurrer.detection_records = []
+        _blurrer.stats = {} # 단일 카메라용 통계 초기화
+        print("🔍 단일 카메라용 얼굴 탐지 기록 기능 활성화")
+    return output_dir
+
+def save_face_counting_records(output_dir="output", filename_prefix="face_detection_wrapper"):
+    """
+    단일 카메라용 얼굴 탐지 기록 저장 (테스트용)
+    
+    Args:
+        output_dir (str): 저장 디렉토리
+        filename_prefix (str): 파일명 접두사
+    """
+    global _blurrer
+    if _blurrer and _blurrer.enable_face_counting:
+        _blurrer.save_detection_records(output_dir=output_dir, filename_prefix=filename_prefix)
+        return True
+    else:
+        print("⚠️ 얼굴 탐지 기록 기능이 비활성화되어 있습니다.")
+        return False

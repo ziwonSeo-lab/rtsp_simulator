@@ -1,0 +1,23 @@
+{
+  "sources": [
+    "./raw_videos/media1.mp4",
+    "./raw_videos/media2.mp4"
+  ],
+  "output_dir": "./raw_videos",
+  "queue_dir": "./processing_queue",
+  "segment_duration": 30,
+  "input_fps": 15.0,
+  "video_codec": "libx264",
+  "container_format": "mp4",
+  "bitrate": "2M",
+  "connection_timeout": 10000,
+  "read_timeout": 5000,
+  "reconnect_interval": 5,
+  "max_concurrent_recordings": 4,
+  "enable_monitoring": true,
+  "monitoring_interval": 10,
+  "max_disk_usage_gb": 100.0,
+  "cleanup_old_files": true,
+  "max_file_age_hours": 24,
+  "max_recording_duration": 3600
+}

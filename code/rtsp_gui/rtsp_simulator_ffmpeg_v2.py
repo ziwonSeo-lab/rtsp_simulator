@@ -118,7 +118,14 @@ class RTSPConfig:
     overlay_enabled: bool = True  # 오버레이 활성화
     latitude: float = 37.5665  # 위도 (서울 기본값)
     longitude: float = 126.9780  # 경도 (서울 기본값)
-
+    # 미리보기 설정
+    preview_enabled: bool = True  # 실시간 미리보기 활성화
+    # 블러 설정
+    blur_enabled: bool = True  # 블러 처리 활성화
+    # 고성능 모드 설정
+    high_performance_mode: bool = False  # 고성능 모드 (모든 오버헤드 제거)
+    blur_interval: int = 1  # 블러 처리 간격
+    
 class FrameCounter:
     """프레임 카운터 클래스"""
     def __init__(self):
@@ -161,7 +168,7 @@ class FrameCounter:
                 'error_frames': self.error_frames,
                 'total_frames': self.total_frames,
                 'loss_rate': self.lost_frames / max(self.total_frames, 1) * 100,
-                'processing_rate': self.processed_frames / max(self.received_frames, 1) * 100,
+                'processing_rate': self.processed_frames / max(self.total_frames, 1) * 100,
                 'save_rate': self.saved_frames / max(self.processed_frames, 1) * 100
             }
     
@@ -911,7 +918,7 @@ class RTSPProcessor:
             # HeadBlurrer 클래스가 있는지 확인하고 인스턴스 생성
             if hasattr(blur_module, 'HeadBlurrer'):
                 # 스레드별로 개별 HeadBlurrer 인스턴스 생성
-                head_blurrer = blur_module.HeadBlurrer(num_camera=1)
+                head_blurrer = blur_module.HeadBlurrer()
                 
                 # apply_blur 메서드를 가진 래퍼 객체 생성
                 class BlurWrapper:
@@ -919,7 +926,7 @@ class RTSPProcessor:
                         self.head_blurrer = head_blurrer
                     
                     def apply_blur(self, frame, thread_id):
-                        return self.head_blurrer.process_frame(frame, 0)  # camera_index는 0으로 고정
+                        return self.head_blurrer.process_frame(frame)
                 
                 self.blur_modules[thread_id] = BlurWrapper(head_blurrer)
                 logger.info(f"스레드 {thread_id}: 블러 모듈(HeadBlurrer) 인스턴스 로드 성공")
@@ -998,130 +1005,115 @@ class RTSPProcessor:
     def process_frame(self, frame: np.ndarray, thread_id: int) -> np.ndarray:
         """프레임 처리 (사용자 블러 모듈 사용)"""
         try:
-            # 🆕 성능 측정 시작
-            self.performance_profiler.start_profile("frame_processing", thread_id)
+            # 🆕 성능 측정 시작 (고성능 모드가 아닌 경우에만)
+            if not self.config.high_performance_mode:
+                self.performance_profiler.start_profile("frame_processing", thread_id)
             
-            processed_frame = frame.copy()
+            # 고성능 모드에서는 프레임 복사 최소화
+            if self.config.high_performance_mode:
+                processed_frame = frame  # 복사 대신 참조 사용
+            else:
+                processed_frame = frame.copy()
             
             # 영상 처리가 활성화된 경우에만 처리
             if self.config.enable_processing:
-                # 🆕 블러 처리 성능 측정 시작
-                self.performance_profiler.start_profile("blur_processing", thread_id)
-                
-                # 스레드별 사용자 블러 모듈 적용
-                if thread_id in self.blur_modules and hasattr(self.blur_modules[thread_id], 'apply_blur'):
-                    try:
-                        processed_frame = self.blur_modules[thread_id].apply_blur(processed_frame, thread_id)
-                        logger.debug(f"쓰레드 {thread_id}: 사용자 블러 처리 완료")
-                    except Exception as e:
-                        logger.error(f"쓰레드 {thread_id}: 사용자 블러 처리 오류 - {e}")
-                        # 블러 처리 실패 시 기본 처리
+                # 🆕 블러 처리 (블러가 활성화된 경우에만, 간격에 따라 처리)
+                if self.config.blur_enabled and (self.frame_count[thread_id] % self.config.blur_interval == 0):
+                    # 🆕 블러 처리 성능 측정 시작 (고성능 모드가 아닌 경우에만)
+                    if not self.config.high_performance_mode:
+                        self.performance_profiler.start_profile("blur_processing", thread_id)
+                    
+                    # 스레드별 사용자 블러 모듈 적용
+                    if thread_id in self.blur_modules and hasattr(self.blur_modules[thread_id], 'apply_blur'):
+                        try:
+                            processed_frame = self.blur_modules[thread_id].apply_blur(processed_frame, thread_id)
+                            logger.debug(f"쓰레드 {thread_id}: 사용자 블러 처리 완료 (프레임 {self.frame_count[thread_id]})")
+                        except Exception as e:
+                            logger.error(f"쓰레드 {thread_id}: 사용자 블러 처리 오류 - {e}")
+                            # 블러 처리 실패 시 기본 처리
+                            processed_frame = cv2.GaussianBlur(frame, (15, 15), 0)
+                    else:
+                        # 기본 블러 처리 (블러 모듈이 없거나 로드 실패한 경우)
                         processed_frame = cv2.GaussianBlur(frame, (15, 15), 0)
+                        if thread_id not in self.blur_modules:
+                            logger.debug(f"쓰레드 {thread_id}: 블러 모듈이 로드되지 않아 기본 블러 적용")
+                    
+                    # 🆕 블러 처리 성능 측정 종료 (고성능 모드가 아닌 경우에만)
+                    if not self.config.high_performance_mode:
+                        self.performance_profiler.end_profile("blur_processing", thread_id)
+                elif self.config.blur_enabled:
+                    # 블러가 활성화되었지만 간격에 맞지 않는 경우, 블러 처리 건너뛰기
+                    logger.debug(f"쓰레드 {thread_id}: 블러 처리 건너뛰기 (간격: {self.config.blur_interval}, 프레임: {self.frame_count[thread_id]})")
                 else:
-                    # 기본 블러 처리 (블러 모듈이 없거나 로드 실패한 경우)
-                    processed_frame = cv2.GaussianBlur(frame, (15, 15), 0)
-                    if thread_id not in self.blur_modules:
-                        logger.debug(f"쓰레드 {thread_id}: 블러 모듈이 로드되지 않아 기본 블러 적용")
+                    # 블러 비활성화 시 원본 프레임 사용
+                    logger.debug(f"쓰레드 {thread_id}: 블러 처리 비활성화됨")
                 
-                # 🆕 블러 처리 성능 측정 종료
-                self.performance_profiler.end_profile("blur_processing", thread_id)
+                # 🆕 오버레이 처리 (고성능 모드가 아닌 경우에만)
+                if not self.config.high_performance_mode:
+                    # 🆕 오버레이 처리 성능 측정 시작
+                    self.performance_profiler.start_profile("overlay_processing", thread_id)
+                    
+                    # 오버레이 정보 추가 (왼쪽 상단)
+                    if self.config.overlay_enabled:
+                        frame_number = self.frame_count[thread_id] + 1
+                        current_time = time.strftime("%Y-%m-%d %H:%M:%S")
+                        latitude = self.config.latitude
+                        longitude = self.config.longitude
+                        
+                        # 오버레이 텍스트 생성
+                        overlay_lines = [
+                            f"Frame: {frame_number:06d}",
+                            f"Time: {current_time}",
+                            f"GPS: {latitude:.4f}, {longitude:.4f}",
+                            f"Thread: {thread_id}"
+                        ]
+                        
+                        # 반투명 배경 추가
+                        for i, line in enumerate(overlay_lines):
+                            y_pos = 25 + i * 25
+                            (text_width, text_height), _ = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+                            bg_rect = np.zeros((text_height + 10, text_width + 10, 3), dtype=np.uint8)
+                            processed_frame[y_pos-text_height-2:y_pos+8, 5:5+text_width+10] = cv2.addWeighted(
+                                processed_frame[y_pos-text_height-2:y_pos+8, 5:5+text_width+10], 0.5, bg_rect, 0.5, 0
+                            )
+                            
+                            # 텍스트 오버레이
+                            y_pos = 25 + i * 25
+                            cv2.putText(processed_frame, line, (10, y_pos), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1, cv2.LINE_AA)
+                    else:
+                        # 오버레이 비활성화 시 기본 텍스트만
+                        text = f"Thread {thread_id} - Processed"
+                        cv2.putText(processed_frame, text, (10, 30), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    
+                    # 🆕 오버레이 처리 성능 측정 종료
+                    self.performance_profiler.end_profile("overlay_processing", thread_id)
                 
-                # 🆕 오버레이 처리 성능 측정 시작
-                self.performance_profiler.start_profile("overlay_processing", thread_id)
+                # 🆕 저장 처리 성능 측정 시작 (고성능 모드가 아닌 경우에만)
+                if self.config.save_enabled:
+                    if not self.config.high_performance_mode:
+                        self.performance_profiler.start_profile("save_processing", thread_id)
+                    self.save_frame(processed_frame, thread_id)
+                    if not self.config.high_performance_mode:
+                        self.performance_profiler.end_profile("save_processing", thread_id)
                 
-                # 오버레이 정보 추가 (왼쪽 상단)
-                if self.config.overlay_enabled:
-                    frame_number = self.frame_count[thread_id] + 1
-                    current_time = time.strftime("%Y-%m-%d %H:%M:%S")
-                    latitude = self.config.latitude
-                    longitude = self.config.longitude
-                    
-                    # 오버레이 텍스트 생성
-                    overlay_lines = [
-                        f"Frame: {frame_number:06d}",
-                        f"GPS: {latitude:.6f}, {longitude:.6f}",
-                        f"Time: {current_time}",
-                        f"Thread: {thread_id}"
-                    ]
-                    
-                    # 텍스트 배경을 위한 반투명 검은색 박스
-                    overlay_height = len(overlay_lines) * 25 + 10
-                    overlay_width = 350
-                    
-                    # 반투명 배경 생성
-                    overlay = processed_frame.copy()
-                    cv2.rectangle(overlay, (5, 5), (overlay_width, overlay_height), (0, 0, 0), -1)
-                    cv2.addWeighted(overlay, 0.7, processed_frame, 0.3, 0, processed_frame)
-                    
-                    # 텍스트 추가
-                    for i, line in enumerate(overlay_lines):
-                        y_pos = 25 + i * 25
-                        cv2.putText(processed_frame, line, (10, y_pos), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1, cv2.LINE_AA)
-                else:
-                    # 오버레이 비활성화 시 기본 텍스트만
-                    text = f"Thread {thread_id} - Processed"
-                    cv2.putText(processed_frame, text, (10, 30), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                # 🆕 프레임 처리 성능 측정 종료 (고성능 모드가 아닌 경우에만)
+                if not self.config.high_performance_mode:
+                    self.performance_profiler.end_profile("frame_processing", thread_id)
                 
-                # 🆕 오버레이 처리 성능 측정 종료
-                self.performance_profiler.end_profile("overlay_processing", thread_id)
-                
-                self.thread_stats[thread_id].increment_processed()
-            else:
-                # 영상 처리 비활성화 시 원본 프레임 사용
-                processed_frame = frame.copy()
-                
-                # 영상 처리 비활성화 시에도 오버레이는 표시
-                if self.config.overlay_enabled:
-                    frame_number = self.frame_count[thread_id] + 1
-                    current_time = time.strftime("%Y-%m-%d %H:%M:%S")
-                    latitude = self.config.latitude
-                    longitude = self.config.longitude
-                    
-                    # 오버레이 텍스트 생성
-                    overlay_lines = [
-                        f"Frame: {frame_number:06d}",
-                        f"GPS: {latitude:.6f}, {longitude:.6f}",
-                        f"Time: {current_time}",
-                        f"Thread: {thread_id}"
-                    ]
-                    
-                    # 텍스트 배경을 위한 반투명 검은색 박스
-                    overlay_height = len(overlay_lines) * 25 + 10
-                    overlay_width = 350
-                    
-                    # 반투명 배경 생성
-                    overlay = processed_frame.copy()
-                    cv2.rectangle(overlay, (5, 5), (overlay_width, overlay_height), (0, 0, 0), -1)
-                    cv2.addWeighted(overlay, 0.7, processed_frame, 0.3, 0, processed_frame)
-                    
-                    # 텍스트 추가
-                    for i, line in enumerate(overlay_lines):
-                        y_pos = 25 + i * 25
-                        cv2.putText(processed_frame, line, (10, y_pos), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1, cv2.LINE_AA)
-                
-                self.thread_stats[thread_id].increment_processed()
-            
-            # 🆕 저장 처리 성능 측정 시작
-            if self.config.save_enabled:
-                self.performance_profiler.start_profile("save_processing", thread_id)
-                self.save_frame(processed_frame, thread_id)
-                self.performance_profiler.end_profile("save_processing", thread_id)
-            
-            # 🆕 프레임 처리 성능 측정 종료
-            self.performance_profiler.end_profile("frame_processing", thread_id)
-            
-            return processed_frame
+                return processed_frame
             
         except Exception as e:
             logger.error(f"쓰레드 {thread_id}: 프레임 처리 오류 - {e}")
-            self.frame_counter.increment_error()  # 전체 통계 업데이트
-            self.thread_stats[thread_id].increment_error()  # 쓰레드별 통계 업데이트
             
-            # 🆕 오류 발생 시에도 성능 측정 종료
-            self.performance_profiler.end_profile("frame_processing", thread_id)
+            # 🆕 기본 통계는 항상, 세부 통계는 고성능 모드가 아닌 경우에만
+            self.frame_counter.increment_error()  # 전체 통계는 항상 업데이트
+            if not self.config.high_performance_mode:
+                self.thread_stats[thread_id].increment_error()  # 스레드별 통계는 고성능 모드에서 제외
+                
+                # 🆕 오류 발생 시에도 성능 측정 종료
+                self.performance_profiler.end_profile("frame_processing", thread_id)
             
             # 오류 발생 시에도 저장 시도
             if self.config.save_enabled:
@@ -1464,7 +1456,6 @@ class RTSPProcessor:
         
         # FPS 기반 프레임 간격 계산
         frame_interval = 1.0 / self.config.input_fps
-        last_frame_time = time.time()
         start_time = time.time()  # 스레드 시작 시간 기록
         
         # 스레드 시작 시간을 connection_status에 저장
@@ -1479,20 +1470,22 @@ class RTSPProcessor:
                     cap = self.connect_to_source(source, thread_id)
                     consecutive_failures = 0
                 
-                # FPS 제어를 위한 대기
-                current_time = time.time()
-                time_since_last_frame = current_time - last_frame_time
+                # FPS 제어를 위한 대기 (시작 시간 기준)
+                next_frame_time = start_time + (frames_received + 1) * frame_interval
+                sleep_time = next_frame_time - time.time()
                 
-                if time_since_last_frame < frame_interval:
-                    time.sleep(frame_interval - time_since_last_frame)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
                 
                 # 프레임 읽기
                 ret, frame = cap.read()
                 
                 if not ret:
                     logger.warning(f"쓰레드 {thread_id}: 프레임 읽기 실패 ({source_name})")
-                    self.frame_counter.increment_lost()  # 전체 통계 업데이트
-                    self.thread_stats[thread_id].increment_lost()  # 쓰레드별 통계 업데이트
+                    # 🆕 기본 통계는 항상, 세부 통계는 고성능 모드가 아닌 경우에만
+                    self.frame_counter.increment_lost()  # 전체 통계는 항상 업데이트
+                    if not self.config.high_performance_mode:
+                        self.thread_stats[thread_id].increment_lost()  # 스레드별 통계는 고성능 모드에서 제외
                     consecutive_failures += 1
                     
                     if consecutive_failures > 10:
@@ -1510,47 +1503,57 @@ class RTSPProcessor:
                         consecutive_failures = 0
                     continue
                 
-                last_frame_time = time.time()
-                
                 # 최대 처리 시간 체크
                 if self.config.max_duration_seconds:
                     elapsed_time = time.time() - start_time
                     if elapsed_time >= self.config.max_duration_seconds:
                         break
                 
-                # 프레임 통계 업데이트
-                self.frame_counter.increment_received()
-                self.thread_stats[thread_id].increment_received()
-                self.connection_status[thread_id]['last_frame_time'] = time.time()
+                # 🆕 프레임 통계 업데이트 (기본 통계는 항상, 세부 통계는 고성능 모드가 아닌 경우에만)
+                self.frame_counter.increment_received()  # 전체 통계는 항상 업데이트
+                if not self.config.high_performance_mode:
+                    self.thread_stats[thread_id].increment_received()  # 스레드별 통계는 고성능 모드에서 제외
+                    self.connection_status[thread_id]['last_frame_time'] = time.time()
                 
                 # 프레임 처리
                 processed_frame = self.process_frame(frame, thread_id)
                 
-                # 프레임 로스 시뮬레이션
+                # 🆕 프레임 로스 시뮬레이션 (기본 통계는 항상, 로깅은 고성능 모드가 아닌 경우에만)
                 if random.random() < self.config.frame_loss_rate:
-                    self.frame_counter.increment_lost()
-                    self.thread_stats[thread_id].increment_lost()
-                    logger.debug(f"쓰레드 {thread_id}: 프레임 {frames_received} 시뮬레이션 손실 ({source_name})")
+                    self.frame_counter.increment_lost()  # 전체 통계는 항상 업데이트
+                    if not self.config.high_performance_mode:
+                        self.thread_stats[thread_id].increment_lost()  # 스레드별 통계는 고성능 모드에서 제외
+                        logger.debug(f"쓰레드 {thread_id}: 프레임 {frames_received} 시뮬레이션 손실 ({source_name})")
                     continue
                 
-                # 처리된 프레임을 미리보기 큐에만 추가
-                try:
-                    # 미리보기 큐에 추가
-                    self.preview_queue[thread_id].put((processed_frame.copy(), source_name), block=False)
-                except queue.Full:
-                    pass
+                # 처리된 프레임을 미리보기 큐에 추가 (미리보기가 활성화된 경우에만)
+                if self.config.preview_enabled:
+                    try:
+                        # 고성능 모드에서는 프레임 복사 생략
+                        if self.config.high_performance_mode:
+                            self.preview_queue[thread_id].put((processed_frame, source_name), block=False)
+                        else:
+                            self.preview_queue[thread_id].put((processed_frame.copy(), source_name), block=False)
+                    except queue.Full:
+                        pass
                 
                 # 통계 업데이트
                 self.frame_counter.increment_processed()
+                if not self.config.high_performance_mode:
+                    self.thread_stats[thread_id].increment_processed()
+                
                 frames_received += 1
                 
-                logger.debug(f"쓰레드 {thread_id}: 프레임 {frames_received} 처리 완료 ({source_name})")
+                # 로깅 (고성능 모드가 아닌 경우에만)
+                if not self.config.high_performance_mode:
+                    logger.debug(f"쓰레드 {thread_id}: 프레임 {frames_received} 처리 완료 ({source_name})")
                 
                 consecutive_failures = 0
                 
             except ConnectionError as e:
                 logger.error(f"쓰레드 {thread_id}: 연결 오류 - {e}")
-                self.connection_status[thread_id]['connected'] = False
+                if not self.config.high_performance_mode:
+                    self.connection_status[thread_id]['connected'] = False
                 if cap:
                     cap.release()
                 cap = None
@@ -1558,8 +1561,10 @@ class RTSPProcessor:
                 
             except Exception as e:
                 logger.error(f"쓰레드 {thread_id}: 예상치 못한 오류 - {e}")
-                self.frame_counter.increment_error()  # 전체 통계 업데이트
-                self.thread_stats[thread_id].increment_error()  # 쓰레드별 통계 업데이트
+                # 🆕 기본 통계는 항상, 세부 통계는 고성능 모드가 아닌 경우에만
+                self.frame_counter.increment_error()  # 전체 통계는 항상 업데이트
+                if not self.config.high_performance_mode:
+                    self.thread_stats[thread_id].increment_error()  # 스레드별 통계는 고성능 모드에서 제외
                 time.sleep(1)
         
         # 정리
@@ -1689,6 +1694,16 @@ class RTSPProcessorGUI:
         self.config = None
         self.update_thread = None
         self.running = False
+        self.preview_enabled = True  # 실시간 미리보기 활성화 상태
+        self.blur_enabled = True  # 블러 처리 활성화 상태
+        self.high_performance_enabled = False  # 고성능 모드 활성화 상태
+        self.overlay_enabled = True  # 오버레이 활성화 상태
+        
+        # 🆕 FPS 계산 개선을 위한 변수들
+        self.processor_start_time = None  # 실제 프로세서 시작 시간
+        self.fps_history = []  # 실시간 FPS 이력
+        self.last_frame_count = 0
+        self.last_fps_time = 0
         
         # 프로젝트 기본 폴더 생성
         self.create_project_folders()
@@ -1807,10 +1822,24 @@ class RTSPProcessorGUI:
         ttk.Entry(blur_frame, textvariable=self.blur_module_var, width=60).grid(row=0, column=1, sticky=(tk.W, tk.E), pady=2, padx=(5, 0))
         ttk.Button(blur_frame, text="파일 선택", command=self.browse_blur_module).grid(row=0, column=2, sticky=tk.W, pady=2, padx=(5, 0))
         
+        # 블러 활성화 체크박스
+        self.blur_enabled_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(blur_frame, text="🎯 블러 처리 활성화", variable=self.blur_enabled_var, command=self.on_blur_checkbox_change).grid(row=1, column=0, sticky=tk.W, pady=2)
+        
+        # 블러 처리 간격 설정
+        ttk.Label(blur_frame, text="블러 처리 간격 (프레임):").grid(row=1, column=1, sticky=tk.W, pady=2, padx=(20, 0))
+        self.blur_interval_var = tk.IntVar(value=1)
+        blur_interval_spinbox = ttk.Spinbox(blur_frame, from_=1, to=30, width=10, textvariable=self.blur_interval_var)
+        blur_interval_spinbox.grid(row=1, column=2, sticky=tk.W, pady=2, padx=(5, 0))
+        
+        # 고성능 모드 체크박스
+        self.high_performance_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(blur_frame, text="⚡ 고성능 모드 (모든 오버헤드 제거)", variable=self.high_performance_var, command=self.on_performance_checkbox_change).grid(row=2, column=0, sticky=tk.W, pady=2)
+        
         blur_info = ttk.Label(blur_frame, 
-                             text="※ apply_blur(frame) 함수가 있는 Python 파일을 선택하세요. 없으면 기본 블러 처리됩니다.", 
+                             text="※ apply_blur(frame) 함수가 있는 Python 파일을 선택하세요. 없으면 기본 블러 처리됩니다. 블러 간격: 1=모든 프레임, 2=2프레임마다, 3=3프레임마다...", 
                              font=("TkDefaultFont", 8), foreground="blue")
-        blur_info.grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(5, 0))
+        blur_info.grid(row=3, column=0, columnspan=3, sticky=tk.W, pady=(5, 0))
 
         # 📍 오버레이 설정 프레임 -----------------------------------------
         overlay_frame = ttk.LabelFrame(
@@ -1827,19 +1856,20 @@ class RTSPProcessorGUI:
         overlay_frame.columnconfigure(3, weight=1)
         
         self.overlay_enabled_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(overlay_frame, text="📍 오버레이 활성화", variable=self.overlay_enabled_var, command=self.on_overlay_checkbox_change).grid(row=0, column=0, sticky=tk.W, pady=2, columnspan=4)
         
-        ttk.Label(overlay_frame, text="위도 (Latitude):").grid(row=0, column=0, sticky=tk.W, pady=2)
+        ttk.Label(overlay_frame, text="위도 (Latitude):").grid(row=1, column=0, sticky=tk.W, pady=2)
         self.latitude_var = tk.DoubleVar(value=37.5665)  # 서울 기본값
-        ttk.Entry(overlay_frame, textvariable=self.latitude_var, width=15).grid(row=0, column=1, sticky=tk.W, pady=2, padx=(5, 0))
+        ttk.Entry(overlay_frame, textvariable=self.latitude_var, width=15).grid(row=1, column=1, sticky=tk.W, pady=2, padx=(5, 0))
         
-        ttk.Label(overlay_frame, text="경도 (Longitude):").grid(row=0, column=2, sticky=tk.W, pady=2, padx=(20, 0))
+        ttk.Label(overlay_frame, text="경도 (Longitude):").grid(row=1, column=2, sticky=tk.W, pady=2, padx=(20, 0))
         self.longitude_var = tk.DoubleVar(value=126.9780)  # 서울 기본값
-        ttk.Entry(overlay_frame, textvariable=self.longitude_var, width=15).grid(row=0, column=3, sticky=tk.W, pady=2, padx=(5, 0))
+        ttk.Entry(overlay_frame, textvariable=self.longitude_var, width=15).grid(row=1, column=3, sticky=tk.W, pady=2, padx=(5, 0))
         
         overlay_info = ttk.Label(overlay_frame, 
                                text="※ 영상 왼쪽 상단에 프레임 번호, GPS 좌표, 현재 시간, 쓰레드 정보가 표시됩니다.", 
                                font=("TkDefaultFont", 8), foreground="blue")
-        overlay_info.grid(row=1, column=0, columnspan=4, sticky=tk.W, pady=(5, 0))
+        overlay_info.grid(row=2, column=0, columnspan=4, sticky=tk.W, pady=(5, 0))
 
         # 💾 저장 설정 프레임 -----------------------------------------
         save_frame = ttk.LabelFrame(
@@ -2132,6 +2162,22 @@ class RTSPProcessorGUI:
         # 🆕 성능 프로파일 저장 버튼
         self.save_profile_button = ttk.Button(button_frame, text="📊 성능 보고서 저장", command=self.save_performance_report)
         self.save_profile_button.pack(side=tk.LEFT, padx=(0, 5))
+        
+        # 실시간 미리보기 토글 버튼
+        self.preview_toggle_button = ttk.Button(button_frame, text="📺 미리보기 끄기", command=self.toggle_preview)
+        self.preview_toggle_button.pack(side=tk.LEFT, padx=(0, 5))
+        
+        # 블러 처리 토글 버튼
+        self.blur_toggle_button = ttk.Button(button_frame, text="🎯 블러 끄기", command=self.toggle_blur)
+        self.blur_toggle_button.pack(side=tk.LEFT, padx=(0, 5))
+        
+        # 고성능 모드 토글 버튼
+        self.performance_toggle_button = ttk.Button(button_frame, text="⚡ 고성능 켜기", command=self.toggle_performance)
+        self.performance_toggle_button.pack(side=tk.LEFT, padx=(0, 5))
+        
+        # 오버레이 토글 버튼
+        self.overlay_toggle_button = ttk.Button(button_frame, text="📍 오버레이 끄기", command=self.toggle_overlay)
+        self.overlay_toggle_button.pack(side=tk.LEFT, padx=(0, 5))
         
         # 📺 실시간 미리보기 및 통계 프레임 ----------------------------
         preview_stats_frame = ttk.Frame(self.main_frame)
@@ -2997,16 +3043,31 @@ VBR: 가변 비트레이트 (효율적)
                 # 오버레이 설정
                 overlay_enabled=self.overlay_enabled_var.get(),
                 latitude=self.latitude_var.get(),
-                longitude=self.longitude_var.get()
+                longitude=self.longitude_var.get(),
+                # 미리보기 설정
+                preview_enabled=self.preview_enabled,
+                # 블러 설정
+                blur_enabled=self.blur_enabled_var.get(),
+                blur_interval=self.blur_interval_var.get(),
+                # 고성능 모드 설정
+                high_performance_mode=self.high_performance_var.get()
             )
             
             self.processor = RTSPProcessor(self.config)
+            
+            # 🆕 정확한 프로세서 시작 시간 기록 (processor.start() 직전)
+            self.processor_start_time = time.time()
             self.processor.start()
+            
+            # 🆕 FPS 계산을 위한 변수들 초기화
+            self.fps_history = []
+            self.last_frame_count = 0
+            self.last_fps_time = self.processor_start_time
             
             # 쓰레드별 미리보기 UI 생성
             self.create_thread_previews()
             
-            self.start_time = time.time()
+            self.start_time = time.time()  # GUI 시작 시간 (호환성 유지)
             self.running = True
             
             self.start_button.config(state=tk.DISABLED)
@@ -3028,6 +3089,27 @@ VBR: 가변 비트레이트 (효율적)
                 self.log_message("⚡ FPS 강제 설정 활성화")
             if blur_module_path:
                 self.log_message(f"🎨 블러 모듈: {os.path.basename(blur_module_path)}")
+            
+            # 블러 처리 상태 출력
+            if self.config.blur_enabled:
+                if self.config.blur_interval == 1:
+                    self.log_message("🎯 블러 처리 활성화됨 (모든 프레임)")
+                else:
+                    self.log_message(f"🎯 블러 처리 활성화됨 ({self.config.blur_interval}프레임마다)")
+            else:
+                self.log_message("⭕ 블러 처리 비활성화됨 (성능 최적화)")
+            
+            # 고성능 모드 상태 출력
+            if self.config.high_performance_mode:
+                self.log_message("⚡ 고성능 모드 활성화됨 (오버헤드 제거, FPS는 소스에 맞춤)")
+            else:
+                self.log_message("🔒 정상 모드 (통계/프로파일링 활성화)")
+            
+            # 오버레이 상태 출력
+            if self.config.overlay_enabled:
+                self.log_message("📍 오버레이 활성화됨 (GPS, 시간, 프레임 정보 표시)")
+            else:
+                self.log_message("⭕ 오버레이 비활성화됨 (성능 개선)")
             
             # 📹 코덱 설정 정보 출력 (항상 출력)
             self.log_message("🎬 코덱 설정:")
@@ -3079,6 +3161,32 @@ VBR: 가변 비트레이트 (효율적)
         self.start_button.config(state=tk.NORMAL)
         self.stop_button.config(state=tk.DISABLED)
         
+        # 미리보기 버튼을 기본 상태로 리셋
+        self.preview_enabled = True
+        self.preview_toggle_button.config(text="📺 미리보기 끄기")
+        
+        # 블러 버튼을 기본 상태로 리셋
+        self.blur_enabled = True
+        self.blur_toggle_button.config(text="🎯 블러 끄기")
+        self.blur_enabled_var.set(True)
+        self.blur_interval_var.set(1)  # 블러 간격을 기본값으로 리셋
+        
+        # 고성능 모드 버튼을 기본 상태로 리셋
+        self.high_performance_enabled = False
+        self.performance_toggle_button.config(text="⚡ 고성능 켜기")
+        self.high_performance_var.set(False)
+        
+        # 오버레이 버튼을 기본 상태로 리셋
+        self.overlay_enabled = True
+        self.overlay_toggle_button.config(text="📍 오버레이 끄기")
+        self.overlay_enabled_var.set(True)
+        
+        # 🆕 FPS 계산 변수들 초기화
+        self.processor_start_time = None
+        self.fps_history = []
+        self.last_frame_count = 0
+        self.last_fps_time = 0
+        
         self.log_message("소스 프로세서 중지됨")
     
     def reset_statistics(self):
@@ -3086,6 +3194,14 @@ VBR: 가변 비트레이트 (효율적)
         if self.processor:
             self.processor.reset_statistics()
             self.start_time = time.time()
+            
+            # 🆕 FPS 계산 변수들도 초기화
+            if hasattr(self, 'processor_start_time'):
+                self.processor_start_time = time.time()
+                self.fps_history = []
+                self.last_frame_count = 0
+                self.last_fps_time = self.processor_start_time
+            
             self.log_message("통계 초기화됨")
     
     def create_thread_previews(self):
@@ -3154,7 +3270,7 @@ VBR: 가변 비트레이트 (효율적)
     
     def update_preview(self):
         """미리보기 업데이트"""
-        if not self.processor or not self.running:
+        if not self.processor or not self.running or not self.preview_enabled:
             return
             
         # 각 쓰레드별 미리보기 업데이트
@@ -3195,8 +3311,11 @@ VBR: 가변 비트레이트 (효율적)
             
         stats = self.processor.get_statistics()
         
-        # 실행 시간 계산
-        runtime = time.time() - self.start_time if self.start_time else 0
+        # 🆕 정확한 실행 시간 계산 (프로세서 시작 시간 기준)
+        if hasattr(self, 'processor_start_time') and self.processor_start_time:
+            runtime = time.time() - self.processor_start_time
+        else:
+            runtime = time.time() - self.start_time if self.start_time else 0
         
         # 전체 통계 라벨 업데이트
         self.stats_labels['received_frames'].config(text=str(stats['received_frames']))
@@ -3208,24 +3327,74 @@ VBR: 가변 비트레이트 (효율적)
         self.stats_labels['processing_rate'].config(text=f"{stats['processing_rate']:.2f}")
         self.stats_labels['save_rate'].config(text=f"{stats['save_rate']:.2f}")
         
-        # 초당 처리 프레임수 계산
+        # 🆕 개선된 FPS 계산 (전체 평균 + 실시간 FPS)
         if runtime > 0 and stats['processed_frames'] > 0:
-            processing_fps = stats['processed_frames'] / runtime
-            fps_text = f"{processing_fps:.1f} FPS"
-            # 색상으로 성능 표시
-            if self.config and hasattr(self.config, 'input_fps'):
-                target_fps = self.config.input_fps
-                if processing_fps >= target_fps * 0.9:
-                    fps_color = "green"
-                elif processing_fps >= target_fps * 0.5:
-                    fps_color = "orange" 
+            # 전체 평균 FPS
+            avg_fps = stats['processed_frames'] / runtime
+            
+            # 실시간 FPS 계산 (최근 1초간)
+            current_time = time.time()
+            current_frames = stats['processed_frames']
+            
+            if hasattr(self, 'last_fps_time') and self.last_fps_time > 0:
+                time_diff = current_time - self.last_fps_time
+                frame_diff = current_frames - self.last_frame_count
+                
+                if time_diff >= 1.0:  # 1초마다 실시간 FPS 계산
+                    realtime_fps = frame_diff / time_diff if time_diff > 0 else 0
+                    
+                    # FPS 이력 관리 (최근 10초)
+                    self.fps_history.append(realtime_fps)
+                    if len(self.fps_history) > 10:
+                        self.fps_history.pop(0)
+                    
+                    # 다음 계산을 위해 업데이트
+                    self.last_fps_time = current_time
+                    self.last_frame_count = current_frames
+                    
+                    # 평균 FPS와 실시간 FPS 표시 (평균이 앞에)
+                    fps_text = f"평균: {avg_fps:.1f} FPS (실시간: {realtime_fps:.1f})"
+                    
+                    # 색상은 실시간 FPS 기준으로 설정
+                    if self.config and hasattr(self.config, 'input_fps'):
+                        target_fps = self.config.input_fps
+                        if realtime_fps >= target_fps * 0.9:
+                            fps_color = "green"
+                        elif realtime_fps >= target_fps * 0.5:
+                            fps_color = "orange" 
+                        else:
+                            fps_color = "red"
+                    else:
+                        fps_color = "blue"
                 else:
-                    fps_color = "red"
+                    # 1초가 지나지 않았으면 이전 값 유지하고 평균만 업데이트
+                    if len(self.fps_history) > 0:
+                        last_realtime_fps = self.fps_history[-1]
+                        fps_text = f"평균: {avg_fps:.1f} FPS (실시간: {last_realtime_fps:.1f})"
+                        # 색상도 실시간 FPS 기준
+                        if self.config and hasattr(self.config, 'input_fps'):
+                            target_fps = self.config.input_fps
+                            if last_realtime_fps >= target_fps * 0.9:
+                                fps_color = "green"
+                            elif last_realtime_fps >= target_fps * 0.5:
+                                fps_color = "orange" 
+                            else:
+                                fps_color = "red"
+                        else:
+                            fps_color = "blue"
+                    else:
+                        fps_text = f"평균: {avg_fps:.1f} FPS (초기화 중)"
+                        fps_color = "gray"
             else:
-                fps_color = "blue"
+                # 초기화
+                self.last_fps_time = current_time
+                self.last_frame_count = current_frames
+                fps_text = f"평균: {avg_fps:.1f} FPS (초기화 중)"
+                fps_color = "gray"
+            
             self.stats_labels['processing_fps'].config(text=fps_text, foreground=fps_color)
         else:
-            self.stats_labels['processing_fps'].config(text="0.0 FPS", foreground="gray")
+            self.stats_labels['processing_fps'].config(text="평균: 0.0 FPS (대기 중)", foreground="gray")
         
         self.stats_labels['thread_count'].config(text=str(stats['thread_count']))
         self.stats_labels['queue_size'].config(text=str(stats['queue_size']))
@@ -3465,11 +3634,156 @@ VBR: 가변 비트레이트 (효율적)
         self.update_thread = threading.Thread(target=update_loop, daemon=True)
         self.update_thread.start()
     
+    def toggle_preview(self):
+        """실시간 미리보기 토글"""
+        self.preview_enabled = not self.preview_enabled
+        
+        # 프로세서가 실행 중인 경우 config 업데이트
+        if self.processor and self.config:
+            self.config.preview_enabled = self.preview_enabled
+            self.processor.config.preview_enabled = self.preview_enabled
+        
+        if self.preview_enabled:
+            self.preview_toggle_button.config(text="📺 미리보기 끄기")
+            self.log_message("🔴 실시간 미리보기 활성화됨 (성능 영향: 중간)")
+        else:
+            self.preview_toggle_button.config(text="📺 미리보기 켜기")
+            self.log_message("⚫ 실시간 미리보기 비활성화됨 (성능 개선: 큐 처리 생략)")
+            
+            # 미리보기 비활성화 시 기존 미리보기 이미지들을 클리어
+            for thread_id in self.preview_labels.keys():
+                preview_label = self.preview_labels[thread_id]['preview']
+                preview_label.configure(image='', text="미리보기 비활성화됨")
+                preview_label.image = None
+                
+            # 미리보기 큐 비우기 (메모리 절약)
+            if self.processor:
+                for thread_id in range(10):
+                    try:
+                        while not self.processor.preview_queue[thread_id].empty():
+                            self.processor.preview_queue[thread_id].get_nowait()
+                    except (queue.Empty, KeyError):
+                        pass
+
+    def toggle_blur(self):
+        """블러 처리 토글"""
+        self.blur_enabled = not self.blur_enabled
+        
+        # 프로세서가 실행 중인 경우 config 업데이트
+        if self.processor and self.config:
+            self.config.blur_enabled = self.blur_enabled
+            self.processor.config.blur_enabled = self.blur_enabled
+        
+        # 체크박스 상태도 업데이트
+        self.blur_enabled_var.set(self.blur_enabled)
+        
+        if self.blur_enabled:
+            self.blur_toggle_button.config(text="🎯 블러 끄기")
+            self.log_message("🎯 블러 처리 활성화됨 (성능 영향: 높음)")
+        else:
+            self.blur_toggle_button.config(text="🎯 블러 켜기")
+            self.log_message("⭕ 블러 처리 비활성화됨 (성능 개선: 상당함)")
+
+    def on_blur_checkbox_change(self):
+        """블러 체크박스 변경 이벤트"""
+        self.blur_enabled = self.blur_enabled_var.get()
+        
+        # 프로세서가 실행 중인 경우 config 업데이트
+        if self.processor and self.config:
+            self.config.blur_enabled = self.blur_enabled
+            self.processor.config.blur_enabled = self.blur_enabled
+        
+        # 버튼 텍스트 업데이트
+        if self.blur_enabled:
+            self.blur_toggle_button.config(text="🎯 블러 끄기")
+            if self.running:
+                self.log_message("🎯 블러 처리 활성화됨 (체크박스)")
+        else:
+            self.blur_toggle_button.config(text="🎯 블러 켜기")
+            if self.running:
+                self.log_message("⭕ 블러 처리 비활성화됨 (체크박스)")
+
     def on_closing(self):
         """창 닫기 처리"""
         if self.processor:
             self.processor.stop()
         self.root.destroy()
+
+    def toggle_performance(self):
+        """고성능 모드 토글"""
+        self.high_performance_enabled = not self.high_performance_enabled
+        
+        # 프로세서가 실행 중인 경우 config 업데이트
+        if self.processor and self.config:
+            self.config.high_performance_mode = self.high_performance_enabled
+            self.processor.config.high_performance_mode = self.high_performance_enabled
+        
+        # 체크박스 상태도 업데이트
+        self.high_performance_var.set(self.high_performance_enabled)
+        
+        if self.high_performance_enabled:
+            self.performance_toggle_button.config(text="⚡ 고성능 끄기")
+            self.log_message("⚡ 고성능 모드 활성화됨 (오버헤드 제거, FPS는 소스에 맞춤)")
+        else:
+            self.performance_toggle_button.config(text="⚡ 고성능 켜기")
+            self.log_message("🔒 고성능 모드 비활성화됨 (정상 모드)")
+
+    def on_performance_checkbox_change(self):
+        """고성능 모드 체크박스 변경 이벤트"""
+        self.high_performance_enabled = self.high_performance_var.get()
+        
+        # 프로세서가 실행 중인 경우 config 업데이트
+        if self.processor and self.config:
+            self.config.high_performance_mode = self.high_performance_enabled
+            self.processor.config.high_performance_mode = self.high_performance_enabled
+        
+        # 버튼 텍스트 업데이트
+        if self.high_performance_enabled:
+            self.performance_toggle_button.config(text="⚡ 고성능 끄기")
+            if self.running:
+                self.log_message("⚡ 고성능 모드 활성화됨 (체크박스)")
+        else:
+            self.performance_toggle_button.config(text="⚡ 고성능 켜기")
+            if self.running:
+                self.log_message("🔒 고성능 모드 비활성화됨 (체크박스)")
+
+    def toggle_overlay(self):
+        """오버레이 토글"""
+        self.overlay_enabled = not self.overlay_enabled
+        
+        # 프로세서가 실행 중인 경우 config 업데이트
+        if self.processor and self.config:
+            self.config.overlay_enabled = self.overlay_enabled
+            self.processor.config.overlay_enabled = self.overlay_enabled
+        
+        # 체크박스 상태도 업데이트
+        self.overlay_enabled_var.set(self.overlay_enabled)
+        
+        if self.overlay_enabled:
+            self.overlay_toggle_button.config(text="📍 오버레이 끄기")
+            self.log_message("📍 오버레이 활성화됨 (성능 영향: 높음)")
+        else:
+            self.overlay_toggle_button.config(text="📍 오버레이 켜기")
+            self.log_message("⭕ 오버레이 비활성화됨 (성능 개선: 상당함)")
+
+    def on_overlay_checkbox_change(self):
+        """오버레이 체크박스 변경 이벤트"""
+        self.overlay_enabled = self.overlay_enabled_var.get()
+        
+        # 프로세서가 실행 중인 경우 config 업데이트
+        if self.processor and self.config:
+            self.config.overlay_enabled = self.overlay_enabled
+            self.processor.config.overlay_enabled = self.overlay_enabled
+        
+        # 버튼 텍스트 업데이트
+        if self.overlay_enabled:
+            self.overlay_toggle_button.config(text="📍 오버레이 끄기")
+            if self.running:
+                self.log_message("📍 오버레이 활성화됨 (체크박스)")
+        else:
+            self.overlay_toggle_button.config(text="📍 오버레이 켜기")
+            if self.running:
+                self.log_message("⭕ 오버레이 비활성화됨 (체크박스)")
 
 def main():
     """메인 함수"""

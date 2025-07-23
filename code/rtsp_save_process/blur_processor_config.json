@@ -1,0 +1,6 @@
+{
+    "blur_module_path": "./example_blur_module.py",
+    "max_concurrent_processes": 2,
+    "delete_original": true,
+    "add_overlay": true
+  }
