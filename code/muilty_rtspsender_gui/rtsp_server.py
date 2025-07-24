@@ -57,6 +57,13 @@ class RTSPStreamConfig:
         self.loop_enabled = True
         self.enabled = False
         self.stream_type = "rtsp"  # "rtsp" 또는 "udp"
+        self.network_noise = 0  # 네트워크 노이즈 (0-100%)
+        
+        # 실제 네트워크 시뮬레이션 설정
+        self.packet_loss = 0      # 패킷 손실률 (0-100%)
+        self.network_delay = 0    # 네트워크 지연 (ms)
+        self.network_jitter = 0   # 네트워크 지터 (ms)
+        self.bandwidth_limit = 0  # 대역폭 제한 (Mbps, 0=제한없음)
 
 def get_local_ip():
     """로컬 네트워크 IP 주소 가져오기"""
@@ -147,7 +154,21 @@ def rtsp_sender_process(stream_id, config, status_queue, stop_event):
     
     # 존재하는 파일만 필터링
     valid_files = [f for f in files_to_play if os.path.exists(f)]
-    port = config.rtsp_port
+    
+    # 설정값을 안전하게 숫자로 변환하는 헬퍼 함수
+    def safe_float(value, default=0.0):
+        try:
+            return float(value) if value else default
+        except (ValueError, TypeError):
+            return default
+    
+    def safe_int(value, default=0):
+        try:
+            return int(float(value)) if value else default
+        except (ValueError, TypeError):
+            return default
+    
+    port = safe_int(config.rtsp_port, 8554 + stream_id)  # 기본 포트
     
     try:
         # 파일 목록을 concat 파일로 생성
@@ -163,11 +184,69 @@ def rtsp_sender_process(stream_id, config, status_queue, stop_event):
         for idx, file_path in enumerate(valid_files):
             logger.info(f"  파일 {idx+1}: {os.path.basename(file_path)}")
         
+        # 네트워크 시뮬레이션 설정
+        network_filters = []
+        network_options = []
+        
+        # 1. 화질 노이즈 시뮬레이션 (기존 기능 유지)
+        network_noise = safe_float(config.network_noise)
+        if network_noise > 0:
+            noise_percent = network_noise / 100.0
+            if noise_percent > 0.1:  # 10% 이상일 때만 적용
+                noise_filter = f"noise=alls={noise_percent*0.5}:allf=t"
+                if noise_percent > 0.3:  # 30% 이상일 때 블러 추가
+                    noise_filter += f",boxblur=1:1"
+                if noise_percent > 0.5:  # 50% 이상일 때 더 강한 블러
+                    noise_filter += f",boxblur=2:2"
+                network_filters.append(noise_filter)
+            logger.info(f"스트림 {stream_id} 화질 노이즈 {network_noise}% 적용됨")
+        
+        # 2. 패킷 손실 시뮬레이션
+        packet_loss = safe_float(config.packet_loss)
+        if packet_loss > 0:
+            # FFmpeg의 -packetsize 옵션과 -drop_pkts_on_overflow 옵션 사용
+            packet_size = max(1024, int(1024 * (1 - packet_loss / 100.0)))
+            network_options.extend(['-packetsize', str(packet_size)])
+            logger.info(f"스트림 {stream_id} 패킷 손실 {packet_loss}% 시뮬레이션 적용됨")
+        
+        # 3. 네트워크 지연 시뮬레이션
+        network_delay = safe_float(config.network_delay)
+        fps = safe_float(config.fps, 30.0)  # 기본 FPS 30
+        if network_delay > 0:
+            # 프레임 지연을 통한 시뮬레이션
+            delay_frames = int(network_delay / (1000.0 / fps))
+            if delay_frames > 0:
+                network_filters.append(f"tpad=start_mode=clone:start_duration={delay_frames/fps}")
+            logger.info(f"스트림 {stream_id} 네트워크 지연 {network_delay}ms 시뮬레이션 적용됨")
+        
+        # 4. 네트워크 지터 시뮬레이션
+        network_jitter = safe_float(config.network_jitter)
+        if network_jitter > 0:
+            # 랜덤 프레임 지연을 통한 지터 시뮬레이션
+            jitter_frames = int(network_jitter / (1000.0 / fps))
+            if jitter_frames > 0:
+                # 지터는 복잡하므로 간단한 랜덤 지연으로 시뮬레이션
+                network_filters.append(f"setpts='if(gt(N,0),PTS+{jitter_frames/fps}*random(0)*2-{jitter_frames/fps},PTS)'")
+            logger.info(f"스트림 {stream_id} 네트워크 지터 {network_jitter}ms 시뮬레이션 적용됨")
+        
+        # 5. 대역폭 제한 시뮬레이션
+        bandwidth_limit = safe_float(config.bandwidth_limit)
+        if bandwidth_limit > 0:
+            # 비트레이트 제한을 통한 대역폭 시뮬레이션
+            limited_bitrate = f"{bandwidth_limit}M"
+            network_options.extend(['-b:v', limited_bitrate, '-maxrate', limited_bitrate])
+            logger.info(f"스트림 {stream_id} 대역폭 제한 {bandwidth_limit}Mbps 시뮬레이션 적용됨")
+        
+        # 모든 필터를 하나로 결합
+        combined_filter = ""
+        if network_filters:
+            combined_filter = ",".join(network_filters)
+        
         # 스트리밍 방식 선택
         if config.stream_type == "rtsp":
             # MediaMTX 방식: FFmpeg → RTMP → MediaMTX → RTSP
             rtmp_port = 1935 + stream_id  # 각 스트림별 RTMP 포트
-            rtsp_port = port              # 각 스트림별 RTSP 포트
+            rtsp_port = safe_int(port, 8554 + stream_id)  # 각 스트림별 RTSP 포트
             
             # MediaMTX 연결 상태 사전 확인
             mediamtx_ready = False
@@ -185,6 +264,7 @@ def rtsp_sender_process(stream_id, config, status_queue, stop_event):
                 status_queue.put((stream_id, 'error', f"MediaMTX 포트 {rtmp_port} 연결 불가"))
                 return
             
+            # 기본 FFmpeg 명령어 구성
             cmd = [
                 'ffmpeg', '-y',
                 '-f', 'concat',
@@ -192,7 +272,34 @@ def rtsp_sender_process(stream_id, config, status_queue, stop_event):
                 '-stream_loop', '-1',
                 '-re',
                 '-i', concat_file,
-                
+            ]
+            
+            # 네트워크 시뮬레이션 옵션 추가
+            if network_options:
+                cmd.extend(network_options)
+            
+            # 네트워크 시뮬레이션 필터가 있으면 비디오 필터 추가
+            if combined_filter:
+                cmd.extend([
+                    '-vf', combined_filter,
+                ])
+            
+            # 비트레이트 설정 (대역폭 제한이 없을 때만 적용)
+            bitrate_str = str(config.bitrate) if config.bitrate else "2M"
+            try:
+                if bitrate_str.endswith('M'):
+                    bufsize = f"{int(bitrate_str[:-1]) * 2}M"
+                elif bitrate_str.endswith('K'):
+                    bufsize = f"{int(bitrate_str[:-1]) * 2}K"
+                else:
+                    bufsize = "4M"  # 기본값
+            except:
+                bufsize = "4M"  # 기본값
+            
+            # 프레임 설정
+            fps_str = str(safe_float(config.fps, 30.0))
+            
+            cmd.extend([
                 # 비디오 인코딩 설정
                 '-c:v', 'libx264',
                 '-preset', 'ultrafast',
@@ -201,14 +308,14 @@ def rtsp_sender_process(stream_id, config, status_queue, stop_event):
                 '-level', '3.1',
                 
                 # 비트레이트 설정
-                '-b:v', config.bitrate,
-                '-maxrate', config.bitrate,
-                '-bufsize', f"{int(config.bitrate[:-1]) * 2}M",
+                '-b:v', bitrate_str,
+                '-maxrate', bitrate_str,
+                '-bufsize', bufsize,
                 
                 # 프레임 설정
-                '-r', str(config.fps),
-                '-g', str(config.fps),
-                '-keyint_min', str(config.fps),
+                '-r', fps_str,
+                '-g', fps_str,
+                '-keyint_min', fps_str,
                 
                 # 픽셀 포맷
                 '-pix_fmt', 'yuv420p',
@@ -219,7 +326,7 @@ def rtsp_sender_process(stream_id, config, status_queue, stop_event):
                 # RTMP 출력
                 '-f', 'flv',
                 f'rtmp://127.0.0.1:{rtmp_port}/live'
-            ]
+            ])
             
             protocol_name = f"RTSP-MediaMTX-{stream_id}"
             connection_url = f"rtsp://127.0.0.1:{rtsp_port}/live"
@@ -228,6 +335,7 @@ def rtsp_sender_process(stream_id, config, status_queue, stop_event):
             logger.info(f"  FFmpeg → RTMP:{rtmp_port} → MediaMTX:{stream_id} → RTSP:{rtsp_port}")
             
         else:  # UDP 모드
+            # 기본 FFmpeg 명령어 구성
             cmd = [
                 'ffmpeg', '-y',
                 '-f', 'concat',
@@ -235,22 +343,38 @@ def rtsp_sender_process(stream_id, config, status_queue, stop_event):
                 '-stream_loop', '-1',
                 '-re',
                 '-i', concat_file,
-                
+            ]
+            
+            # 네트워크 시뮬레이션 옵션 추가
+            if network_options:
+                cmd.extend(network_options)
+            
+            # 네트워크 시뮬레이션 필터가 있으면 비디오 필터 추가
+            if combined_filter:
+                cmd.extend([
+                    '-vf', combined_filter,
+                ])
+            
+            # UDP 모드용 비트레이트 설정
+            udp_bitrate_str = str(config.bitrate) if config.bitrate else "2M"
+            udp_fps_str = str(safe_float(config.fps, 30.0))
+            
+            cmd.extend([
                 # 비디오 설정
                 '-c:v', 'libx264',
                 '-preset', 'ultrafast',
                 '-tune', 'zerolatency',
                 '-profile:v', 'baseline',
-                '-b:v', config.bitrate,
-                '-r', str(config.fps),
-                '-g', str(config.fps),
+                '-b:v', udp_bitrate_str,
+                '-r', udp_fps_str,
+                '-g', udp_fps_str,
                 '-pix_fmt', 'yuv420p',
                 '-an',
                 
                 # UDP 출력
                 '-f', 'mpegts',
                 f'udp://127.0.0.1:{port}?pkt_size=1316'
-            ]
+            ])
             protocol_name = "UDP"
             connection_url = f"udp://@127.0.0.1:{port}"
         
@@ -527,11 +651,49 @@ class RTSPSenderGUI:
         self.global_bitrate_var = tk.StringVar(value="2M")
         global_bitrate_combo = ttk.Combobox(settings_section, textvariable=self.global_bitrate_var,
                                            values=["500K", "1M", "2M", "4M", "8M"], width=10, state="readonly")
-        global_bitrate_combo.grid(row=0, column=5, sticky=tk.W, padx=(5, 0))
+        global_bitrate_combo.grid(row=0, column=5, sticky=tk.W, padx=(5, 15))
+        
+        ttk.Label(settings_section, text="전체 노이즈:").grid(row=0, column=6, sticky=tk.W)
+        self.global_noise_var = tk.IntVar(value=0)
+        global_noise_spin = ttk.Spinbox(settings_section, from_=0, to=100, textvariable=self.global_noise_var, width=8)
+        global_noise_spin.grid(row=0, column=7, sticky=tk.W, padx=(5, 0))
+        ttk.Label(settings_section, text="%").grid(row=0, column=8, sticky=tk.W)
+        
+        # 새로운 네트워크 시뮬레이션 설정들을 위한 두 번째 행
+        network_settings_section = ttk.Frame(global_settings_frame)
+        network_settings_section.grid(row=5, column=0, columnspan=6, sticky=(tk.W, tk.E), pady=(5, 0))
+        
+        # 패킷 손실
+        ttk.Label(network_settings_section, text="전체 패킷손실:").grid(row=0, column=0, sticky=tk.W)
+        self.global_packet_loss_var = tk.IntVar(value=0)
+        global_packet_loss_spin = ttk.Spinbox(network_settings_section, from_=0, to=50, textvariable=self.global_packet_loss_var, width=6)
+        global_packet_loss_spin.grid(row=0, column=1, sticky=tk.W, padx=(5, 5))
+        ttk.Label(network_settings_section, text="%").grid(row=0, column=2, sticky=tk.W, padx=(0, 15))
+        
+        # 네트워크 지연
+        ttk.Label(network_settings_section, text="전체 지연:").grid(row=0, column=3, sticky=tk.W)
+        self.global_network_delay_var = tk.IntVar(value=0)
+        global_network_delay_spin = ttk.Spinbox(network_settings_section, from_=0, to=1000, textvariable=self.global_network_delay_var, width=8)
+        global_network_delay_spin.grid(row=0, column=4, sticky=tk.W, padx=(5, 5))
+        ttk.Label(network_settings_section, text="ms").grid(row=0, column=5, sticky=tk.W, padx=(0, 15))
+        
+        # 네트워크 지터
+        ttk.Label(network_settings_section, text="전체 지터:").grid(row=0, column=6, sticky=tk.W)
+        self.global_network_jitter_var = tk.IntVar(value=0)
+        global_network_jitter_spin = ttk.Spinbox(network_settings_section, from_=0, to=500, textvariable=self.global_network_jitter_var, width=8)
+        global_network_jitter_spin.grid(row=0, column=7, sticky=tk.W, padx=(5, 5))
+        ttk.Label(network_settings_section, text="ms").grid(row=0, column=8, sticky=tk.W, padx=(0, 15))
+        
+        # 대역폭 제한
+        ttk.Label(network_settings_section, text="전체 대역폭제한:").grid(row=0, column=9, sticky=tk.W)
+        self.global_bandwidth_limit_var = tk.IntVar(value=0)
+        global_bandwidth_limit_spin = ttk.Spinbox(network_settings_section, from_=0, to=50, textvariable=self.global_bandwidth_limit_var, width=8)
+        global_bandwidth_limit_spin.grid(row=0, column=10, sticky=tk.W, padx=(5, 5))
+        ttk.Label(network_settings_section, text="Mbps").grid(row=0, column=11, sticky=tk.W)
         
         # 전체 설정 적용 버튼
         apply_section = ttk.Frame(global_settings_frame)
-        apply_section.grid(row=5, column=0, columnspan=6, sticky=(tk.W, tk.E), pady=(0, 10))
+        apply_section.grid(row=6, column=0, columnspan=6, sticky=(tk.W, tk.E), pady=(0, 10))
         
         ttk.Button(apply_section, text="🔢 포트 자동 할당", command=self.auto_assign_ports).pack(side=tk.LEFT, padx=(0, 10))
         ttk.Button(apply_section, text="⚙️ 전체 설정 적용", command=self.apply_global_settings).pack(side=tk.LEFT, padx=(0, 10))
@@ -580,7 +742,14 @@ class RTSPSenderGUI:
 📱 로컬: rtsp://127.0.0.1:8554/live (같은 컴퓨터)
 🌐 네트워크: rtsp://실제IP:8554/live (다른 장치에서)  
 • 설정: '🌐 MediaMTX 설정' → start_all_mediamtx.bat 실행
-• 각 포트별로 독립적인 MediaMTX 서버 실행"""
+• 각 포트별로 독립적인 MediaMTX 서버 실행
+
+🔊 네트워크 시뮬레이션:
+• 노이즈: 화질 저하 시뮬레이션 (0-100%)
+• 패킷손실: 실제 패킷 손실 시뮬레이션 (0-50%)
+• 지연: 네트워크 지연 시뮬레이션 (0-1000ms)
+• 지터: 네트워크 지터 시뮬레이션 (0-500ms)
+• 대역폭제한: 대역폭 제한 시뮬레이션 (0-50Mbps)"""
         
         ttk.Label(help_frame, text=help_text, font=("TkDefaultFont", 9), foreground="blue").pack(anchor=tk.W)
         
@@ -825,11 +994,50 @@ class RTSPSenderGUI:
         bitrate_var = tk.StringVar(value="2M")
         bitrate_combo = ttk.Combobox(settings_frame, textvariable=bitrate_var,
                                     values=["500K", "1M", "2M", "4M", "8M"], width=8, state="readonly")
-        bitrate_combo.grid(row=0, column=5, sticky=tk.W, padx=(5, 0))
+        bitrate_combo.grid(row=0, column=5, sticky=tk.W, padx=(5, 15))
+        
+        # 네트워크 노이즈
+        ttk.Label(settings_frame, text="노이즈:").grid(row=0, column=6, sticky=tk.W)
+        noise_var = tk.IntVar(value=0)
+        noise_spin = ttk.Spinbox(settings_frame, from_=0, to=100, textvariable=noise_var, width=6)
+        noise_spin.grid(row=0, column=7, sticky=tk.W, padx=(5, 5))
+        ttk.Label(settings_frame, text="%").grid(row=0, column=8, sticky=tk.W)
+        
+        # 새로운 네트워크 시뮬레이션 설정들을 위한 두 번째 행
+        network_frame = ttk.Frame(frame)
+        network_frame.grid(row=4, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=(10, 0))
+        
+        # 패킷 손실
+        ttk.Label(network_frame, text="패킷손실:").grid(row=0, column=0, sticky=tk.W)
+        packet_loss_var = tk.IntVar(value=0)
+        packet_loss_spin = ttk.Spinbox(network_frame, from_=0, to=50, textvariable=packet_loss_var, width=6)
+        packet_loss_spin.grid(row=0, column=1, sticky=tk.W, padx=(5, 5))
+        ttk.Label(network_frame, text="%").grid(row=0, column=2, sticky=tk.W, padx=(0, 15))
+        
+        # 네트워크 지연
+        ttk.Label(network_frame, text="지연:").grid(row=0, column=3, sticky=tk.W)
+        network_delay_var = tk.IntVar(value=0)
+        network_delay_spin = ttk.Spinbox(network_frame, from_=0, to=1000, textvariable=network_delay_var, width=8)
+        network_delay_spin.grid(row=0, column=4, sticky=tk.W, padx=(5, 5))
+        ttk.Label(network_frame, text="ms").grid(row=0, column=5, sticky=tk.W, padx=(0, 15))
+        
+        # 네트워크 지터
+        ttk.Label(network_frame, text="지터:").grid(row=0, column=6, sticky=tk.W)
+        network_jitter_var = tk.IntVar(value=0)
+        network_jitter_spin = ttk.Spinbox(network_frame, from_=0, to=500, textvariable=network_jitter_var, width=8)
+        network_jitter_spin.grid(row=0, column=7, sticky=tk.W, padx=(5, 5))
+        ttk.Label(network_frame, text="ms").grid(row=0, column=8, sticky=tk.W, padx=(0, 15))
+        
+        # 대역폭 제한
+        ttk.Label(network_frame, text="대역폭제한:").grid(row=0, column=9, sticky=tk.W)
+        bandwidth_limit_var = tk.IntVar(value=0)
+        bandwidth_limit_spin = ttk.Spinbox(network_frame, from_=0, to=50, textvariable=bandwidth_limit_var, width=8)
+        bandwidth_limit_spin.grid(row=0, column=10, sticky=tk.W, padx=(5, 5))
+        ttk.Label(network_frame, text="Mbps").grid(row=0, column=11, sticky=tk.W)
         
         # 제어 버튼들
         button_frame = ttk.Frame(frame)
-        button_frame.grid(row=4, column=0, columnspan=4, pady=(10, 0))
+        button_frame.grid(row=5, column=0, columnspan=4, pady=(10, 0))
         
         start_btn = ttk.Button(button_frame, text="▶️ 시작", command=lambda i=stream_id: self.start_stream(i))
         start_btn.pack(side=tk.LEFT, padx=(0, 5))
@@ -843,13 +1051,20 @@ class RTSPSenderGUI:
         
         # 상태 표시
         status_label = ttk.Label(frame, text="대기 중", foreground="gray")
-        status_label.grid(row=5, column=0, columnspan=4, pady=(10, 0))
+        status_label.grid(row=6, column=0, columnspan=4, pady=(10, 0))
         self.status_labels.append(status_label)
         
         # 설정 변수들 저장
         setattr(self, f'fps_var_{stream_id}', fps_var)
         setattr(self, f'resolution_var_{stream_id}', resolution_var)
         setattr(self, f'bitrate_var_{stream_id}', bitrate_var)
+        setattr(self, f'noise_var_{stream_id}', noise_var)
+        
+        # 새로운 네트워크 시뮬레이션 변수들 저장
+        setattr(self, f'packet_loss_var_{stream_id}', packet_loss_var)
+        setattr(self, f'network_delay_var_{stream_id}', network_delay_var)
+        setattr(self, f'network_jitter_var_{stream_id}', network_jitter_var)
+        setattr(self, f'bandwidth_limit_var_{stream_id}', bandwidth_limit_var)
         
         self.stream_frames.append(frame)
         
@@ -859,6 +1074,7 @@ class RTSPSenderGUI:
         settings_frame.columnconfigure(1, weight=1)
         settings_frame.columnconfigure(3, weight=1)
         settings_frame.columnconfigure(5, weight=1)
+        settings_frame.columnconfigure(7, weight=1)
     
     def test_vlc_connection(self, stream_id):
         """VLC로 연결 테스트"""
@@ -941,9 +1157,22 @@ class RTSPSenderGUI:
     
     def apply_global_settings(self):
         """전체 설정을 활성화된 스트림에 적용"""
-        global_fps = self.global_fps_var.get()
-        global_resolution = self.global_resolution_var.get()
-        global_bitrate = self.global_bitrate_var.get()
+        # 빈 문자열을 안전하게 처리
+        def safe_get(var):
+            try:
+                value = var.get()
+                return value if value != "" else "0"
+            except:
+                return "0"
+        
+        global_fps = safe_get(self.global_fps_var)
+        global_resolution = safe_get(self.global_resolution_var)
+        global_bitrate = safe_get(self.global_bitrate_var)
+        global_noise = safe_get(self.global_noise_var)
+        global_packet_loss = safe_get(self.global_packet_loss_var)
+        global_network_delay = safe_get(self.global_network_delay_var)
+        global_network_jitter = safe_get(self.global_network_jitter_var)
+        global_bandwidth_limit = safe_get(self.global_bandwidth_limit_var)
         
         applied_count = 0
         
@@ -952,10 +1181,15 @@ class RTSPSenderGUI:
                 getattr(self, f'fps_var_{i}').set(global_fps)
                 getattr(self, f'resolution_var_{i}').set(global_resolution)
                 getattr(self, f'bitrate_var_{i}').set(global_bitrate)
+                getattr(self, f'noise_var_{i}').set(global_noise)
+                getattr(self, f'packet_loss_var_{i}').set(global_packet_loss)
+                getattr(self, f'network_delay_var_{i}').set(global_network_delay)
+                getattr(self, f'network_jitter_var_{i}').set(global_network_jitter)
+                getattr(self, f'bandwidth_limit_var_{i}').set(global_bandwidth_limit)
                 applied_count += 1
         
         if applied_count > 0:
-            logger.info(f"전체 설정 적용: {applied_count}개 스트림에 FPS={global_fps}, 해상도={global_resolution}, 비트레이트={global_bitrate}")
+            logger.info(f"전체 설정 적용: {applied_count}개 스트림에 FPS={global_fps}, 해상도={global_resolution}, 비트레이트={global_bitrate}, 노이즈={global_noise}%, 패킷손실={global_packet_loss}%, 지연={global_network_delay}ms, 지터={global_network_jitter}ms, 대역폭제한={global_bandwidth_limit}Mbps")
     
     def enable_active_streams(self):
         """파일이 있는 스트림들 활성화"""
@@ -973,6 +1207,14 @@ class RTSPSenderGUI:
     
     def get_stream_config(self, stream_id):
         """스트림 설정 가져오기"""
+        # 빈 문자열을 안전하게 처리하는 헬퍼 함수
+        def safe_get(var):
+            try:
+                value = var.get()
+                return value if value != "" else "0"
+            except:
+                return "0"
+        
         config = RTSPStreamConfig()
         config.video_file = self.file_vars[stream_id].get()
         
@@ -985,16 +1227,26 @@ class RTSPSenderGUI:
             logger.info(f"스트림 {stream_id+1} 단일 파일 모드")
         
         config.rtsp_url = self.rtsp_vars[stream_id].get()
-        config.rtsp_port = getattr(self, f'port_var_{stream_id}').get()
+        config.rtsp_port = safe_get(getattr(self, f'port_var_{stream_id}'))
         config.enabled = self.enable_vars[stream_id].get()
         config.stream_type = self.stream_type_vars[stream_id].get()
         
-        config.fps = getattr(self, f'fps_var_{stream_id}').get()
-        config.bitrate = getattr(self, f'bitrate_var_{stream_id}').get()
+        config.fps = safe_get(getattr(self, f'fps_var_{stream_id}'))
+        config.bitrate = safe_get(getattr(self, f'bitrate_var_{stream_id}'))
+        config.network_noise = safe_get(getattr(self, f'noise_var_{stream_id}'))
         
-        resolution = getattr(self, f'resolution_var_{stream_id}').get()
-        if 'x' in resolution:
-            config.width, config.height = map(int, resolution.split('x'))
+        # 새로운 네트워크 시뮬레이션 설정
+        config.packet_loss = safe_get(getattr(self, f'packet_loss_var_{stream_id}'))
+        config.network_delay = safe_get(getattr(self, f'network_delay_var_{stream_id}'))
+        config.network_jitter = safe_get(getattr(self, f'network_jitter_var_{stream_id}'))
+        config.bandwidth_limit = safe_get(getattr(self, f'bandwidth_limit_var_{stream_id}'))
+        
+        resolution = safe_get(getattr(self, f'resolution_var_{stream_id}'))
+        if resolution and 'x' in resolution:
+            try:
+                config.width, config.height = map(int, resolution.split('x'))
+            except:
+                config.width, config.height = 1920, 1080  # 기본값
         
         return config
     
@@ -1698,6 +1950,11 @@ paths:
                 'fps': self.global_fps_var.get(),
                 'resolution': self.global_resolution_var.get(),
                 'bitrate': self.global_bitrate_var.get(),
+                'noise': self.global_noise_var.get(),
+                'packet_loss': self.global_packet_loss_var.get(),
+                'network_delay': self.global_network_delay_var.get(),
+                'network_jitter': self.global_network_jitter_var.get(),
+                'bandwidth_limit': self.global_bandwidth_limit_var.get(),
                 'thread_count': self.thread_count_var.get(),
                 'server_ip': self.server_ip_var.get(),
                 'stream_type': self.global_stream_type.get()
@@ -1717,7 +1974,12 @@ paths:
                 'width': config.width,
                 'height': config.height,
                 'bitrate': config.bitrate,
-                'stream_type': config.stream_type
+                'network_noise': config.network_noise,
+                'stream_type': config.stream_type,
+                'packet_loss': config.packet_loss,
+                'network_delay': config.network_delay,
+                'network_jitter': config.network_jitter,
+                'bandwidth_limit': config.bandwidth_limit
             }
             settings['streams'].append(stream_settings)
         
@@ -1753,6 +2015,11 @@ paths:
                     self.global_fps_var.set(global_settings.get('fps', 15))
                     self.global_resolution_var.set(global_settings.get('resolution', '1920x1080'))
                     self.global_bitrate_var.set(global_settings.get('bitrate', '2M'))
+                    self.global_noise_var.set(global_settings.get('noise', 0))
+                    self.global_packet_loss_var.set(global_settings.get('packet_loss', 0))
+                    self.global_network_delay_var.set(global_settings.get('network_delay', 0))
+                    self.global_network_jitter_var.set(global_settings.get('network_jitter', 0))
+                    self.global_bandwidth_limit_var.set(global_settings.get('bandwidth_limit', 0))
                     self.thread_count_var.set(global_settings.get('thread_count', 1))
                     self.global_stream_type.set(global_settings.get('stream_type', 'udp'))
                     
@@ -1781,6 +2048,13 @@ paths:
                         
                         getattr(self, f'fps_var_{i}').set(stream_settings.get('fps', 15))
                         getattr(self, f'bitrate_var_{i}').set(stream_settings.get('bitrate', '2M'))
+                        getattr(self, f'noise_var_{i}').set(stream_settings.get('network_noise', 0))
+                        
+                        # 새로운 네트워크 시뮬레이션 설정 불러오기
+                        getattr(self, f'packet_loss_var_{i}').set(stream_settings.get('packet_loss', 0))
+                        getattr(self, f'network_delay_var_{i}').set(stream_settings.get('network_delay', 0))
+                        getattr(self, f'network_jitter_var_{i}').set(stream_settings.get('network_jitter', 0))
+                        getattr(self, f'bandwidth_limit_var_{i}').set(stream_settings.get('bandwidth_limit', 0))
                         
                         width = stream_settings.get('width', 1920)
                         height = stream_settings.get('height', 1080)
