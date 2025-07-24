@@ -86,7 +86,7 @@ class RTSPConfig:
     sources: List[str]
     thread_count: int = get_env_value('DEFAULT_THREAD_COUNT', 6, int)
     blur_workers: int = 3
-    save_workers: int = 2
+    save_workers: int = 12
     max_duration_seconds: Optional[int] = None
     frame_loss_rate: float = 0.0
     reconnect_interval: int = 5
@@ -99,8 +99,8 @@ class RTSPConfig:
     save_format: str = "mp4"
     input_fps: float = 15.0
     force_fps: bool = True
-    blur_queue_size: int = 200
-    save_queue_size: int = 300
+    blur_queue_size: int = 1000
+    save_queue_size: int = 1000
     preview_queue_size: int = 50
     processing_queue_size: int = 1000
     
@@ -110,7 +110,7 @@ class RTSPConfig:
     video_codec: str = "libx264"
     audio_codec: str = "aac"
     compression_level: int = 6
-    quality_mode: str = "crf"
+    quality_mode: str = "cbr"
     bitrate: str = "2M"
     max_bitrate: str = "4M"
     buffer_size: str = "8M"
@@ -135,7 +135,7 @@ class RTSPConfig:
     high_performance_mode: bool = False
     
     # 블러 처리 간격 설정
-    blur_interval: int = 1  # 몇 프레임마다 블러 처리할지 (1 = 모든 프레임, 2 = 2프레임마다, 3 = 3프레임마다...)
+    blur_interval: int = 3  # 몇 프레임마다 블러 처리할지 (1 = 모든 프레임, 2 = 2프레임마다, 3 = 3프레임마다...)
 
 class FrameStatistics:
     """프레임 통계 관리 클래스"""
@@ -2190,7 +2190,7 @@ class RTSPProcessorGUI:
         performance_frame = ttk.LabelFrame(stats_container_frame, text="⏱️ 성능 프로파일", padding="10")
         performance_frame.grid(row=6, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(5, 0))
         # PID 정보를 표시할 텍스트 위젯
-        self.pid_info_text = tk.Text(pid_frame, height=12, width=50, font=("Consolas", 9), wrap=tk.WORD)
+        self.pid_info_text = tk.Text(pid_frame, height=15, width=50, font=("Consolas", 9), wrap=tk.WORD)
         pid_scrollbar = ttk.Scrollbar(pid_frame, orient="vertical", command=self.pid_info_text.yview)
         self.pid_info_text.configure(yscrollcommand=pid_scrollbar.set)
         
@@ -2200,6 +2200,7 @@ class RTSPProcessorGUI:
         # 초기 PID 정보 메시지
         self.pid_info_text.insert(tk.END, "시스템 시작 대기 중...\n")
         self.pid_info_text.config(state=tk.DISABLED)
+        self.pid_info_text.see(tk.END)  # 스크롤을 맨 아래로
         
         # 리소스 모니터링 프레임
         resource_frame = ttk.LabelFrame(stats_container_frame, text="💻 리소스 모니터링", padding="10")
@@ -2236,16 +2237,6 @@ class RTSPProcessorGUI:
             self.performance_labels[key] = ttk.Label(performance_frame, text="대기 중", foreground="gray")
             self.performance_labels[key].grid(row=i, column=1, sticky=tk.W, pady=2, padx=(10, 0))
         
-        # 📝 로그 프레임
-        log_frame = ttk.LabelFrame(self.main_frame, text="📝 로그", padding="5")
-        log_frame.grid(row=9, column=0, columnspan=4, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 5))
-        
-        self.log_text = tk.Text(log_frame, height=8, width=80)
-        log_scrollbar = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
-        self.log_text.configure(yscrollcommand=log_scrollbar.set)
-        
-        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
         # 메인 프레임 그리드 설정
         self.main_frame.columnconfigure(0, weight=1)
@@ -2924,9 +2915,9 @@ VBR: 가변 비트레이트 (효율적)
             # PID 정보 텍스트 위젯 초기화
             if hasattr(self, 'pid_info_text'):
                 self.pid_info_text.config(state=tk.NORMAL)
-                self.pid_info_text.delete(1.0, tk.END)
-                self.pid_info_text.insert(tk.END, "🚀 시스템 시작 중...\n")
-                self.pid_info_text.insert(tk.END, "프로세스 PID 정보를 수집 중입니다...\n")
+                # self.pid_info_text.delete(1.0, tk.END)
+                # self.pid_info_text.insert(tk.END, "🚀 시스템 시작 중...\n")
+                # self.pid_info_text.insert(tk.END, "프로세스 PID 정보를 수집 중입니다...\n")
                 self.pid_info_text.config(state=tk.DISABLED)
             
             # 업데이트 쓰레드 시작
@@ -3661,7 +3652,7 @@ VBR: 가변 비트레이트 (효율적)
                         self.pid_info_text.insert(tk.END, "💻 시스템 정보: psutil 모듈 없음\n")
                     
                     self.pid_info_text.config(state=tk.DISABLED)
-                    self.pid_info_text.see(tk.END)  # 스크롤을 맨 아래로
+                    # self.pid_info_text.see(tk.END)  # 스크롤을 맨 아래로
             else:
                 self.log_message("⚠️ PID 정보가 수집되지 않았습니다")
             
@@ -3802,9 +3793,10 @@ VBR: 가변 비트레이트 (효율적)
                     
                     # PID 정보는 1초마다 업데이트 (더 자주 확인할 수 있도록)
                     pid_update_counter += 1
-                    if pid_update_counter >= 10:  # 0.1초 * 10 = 1초
+                    if pid_update_counter >= 200:  # 0.1초 * 10 = 1초
                         self.root.after(0, self.update_process_pid_info)
                         pid_update_counter = 0
+                        
                     
                     time.sleep(0.1)  # 100ms마다 업데이트
                 except:
