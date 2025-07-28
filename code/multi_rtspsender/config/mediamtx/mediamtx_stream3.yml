@@ -1,0 +1,32 @@
+# MediaMTX 설정 파일 - 스트림 3 (Ubuntu 버전)
+# RTSP 포트 1114 전용 인스턴스
+
+# API 설정
+api: yes
+apiAddress: 127.0.0.1:10000
+
+# RTSP 서버 설정 (TCP 전용)
+rtspAddress: :1114
+rtspTransports: [tcp,udp]
+
+# RTMP 서버 설정  
+rtmpAddress: :1914
+
+# 모든 추가 서비스 비활성화 (리소스 절약)
+hls: no
+webrtc: no
+srt: no
+
+# 로그 설정
+logLevel: info
+logDestinations: [stdout]
+
+# 타임아웃 설정
+readTimeout: 10s
+writeTimeout: 10s
+
+# 스트림 경로 설정
+paths:
+  live:
+    source: publisher
+    sourceOnDemand: no
