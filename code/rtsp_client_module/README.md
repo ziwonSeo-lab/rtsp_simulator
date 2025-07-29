@@ -184,7 +184,11 @@ python example.py
 
   # 실제 실행 명령어 
 
+  ## headless 모드
   python run_headless.py --save
+
+  ## gui 모드
+  python run_with_gui.py --save
 
   # 실시간 통계 모니터링링
   code/rtsp_client_module/show_stats.py
