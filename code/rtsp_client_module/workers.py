@@ -737,8 +737,8 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
                         
                         if two_stage_enabled:
                             # 임시 파일명 (접두사 추가)
-                            temp_filename = f"{temp_prefix}{base_filename}"
-                            filepath = os.path.join(stream_dirs[stream_id], temp_filename)
+                            filename = f"{temp_prefix}{base_filename}"
+                            filepath = os.path.join(stream_dirs[stream_id], filename)
                         else:
                             # 일반 저장
                             filename = base_filename
