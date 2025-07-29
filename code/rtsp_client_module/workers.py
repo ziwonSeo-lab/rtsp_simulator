@@ -249,8 +249,8 @@ def rtsp_capture_process(source, stream_id, thread_id, blur_queue, preview_queue
             spec.loader.exec_module(blur_module)
             
             if hasattr(blur_module, 'HeadBlurrer'):
-                head_blurrer = blur_module.HeadBlurrer(num_camera=1)
-                blur_module.apply_blur = lambda frame: head_blurrer.process_frame(frame, 0)
+                head_blurrer = blur_module.HeadBlurrer()  # num_camera 매개변수 제거
+                blur_module.apply_blur = lambda frame: head_blurrer.process_frame(frame)
             
             logger.info(f"Stream {stream_id}: 블러 모듈 로드 성공")
         except Exception as e:
