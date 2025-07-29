@@ -1,0 +1,40 @@
+{
+  "global_settings": {
+    "server_ip": "10.2.10.158",
+    "log_level": "INFO"
+  },
+  "streams": [
+    {
+      "stream_id": 0,
+      "name": "Stream 1 - No TC",
+      "enabled": true,
+      "video_files": ["/home/szw001/development/2025/IUU/rtsp_simulator/code/multi_rtspsender/tools/utils/.video/미디어1_upscaled_1920x1080.mp4"],
+      "stream_type": "rtsp",
+      "rtsp_port": 1111,
+      "rtmp_port": 1911,
+      "server_ip": "10.2.10.158",
+      "fps": 15,
+      "bitrate": "5M",
+      "packet_loss": 0,
+      "network_delay": 0,
+      "network_jitter": 0,
+      "bandwidth_limit": 0
+    },
+    {
+      "stream_id": 1,
+      "name": "Stream 2 - No TC", 
+      "enabled": true,
+      "video_files": ["/home/szw001/development/2025/IUU/rtsp_simulator/code/multi_rtspsender/tools/utils/.video/미디어2_upscaled_1920x1080.mp4"],
+      "stream_type": "rtsp",
+      "rtsp_port": 1112,
+      "rtmp_port": 1912,
+      "server_ip": "10.2.10.158",
+      "fps": 15,
+      "bitrate": "5M",
+      "packet_loss": 0,
+      "network_delay": 0,
+      "network_jitter": 0,
+      "bandwidth_limit": 0
+    }
+  ]
+}

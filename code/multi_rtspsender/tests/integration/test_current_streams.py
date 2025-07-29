@@ -22,8 +22,10 @@ def test_stream(stream_num, duration=10):
     
     try:
         # RTSP 클라이언트 실행
+        # 현재 디렉토리에서 상대 경로 수정
+        script_path = '/home/szw001/development/2025/IUU/rtsp_simulator/code/multi_rtspsender/src/client/rtsp_client_packet_analyzer.py'
         result = subprocess.run([
-            'python3', '../../src/client/rtsp_client_packet_analyzer.py',
+            'python3', script_path,
             '--url', rtsp_url,
             '--duration', str(duration)
         ], capture_output=False, text=True, timeout=duration + 10)

@@ -1,0 +1,24 @@
+{
+  "global_settings": {
+    "server_ip": "10.2.10.158",
+    "log_level": "INFO"
+  },
+  "streams": [
+    {
+      "stream_id": 1,
+      "name": "Test Stream 1 - With Network Simulation", 
+      "enabled": true,
+      "video_files": ["/home/szw001/development/2025/IUU/rtsp_simulator/code/multi_rtspsender/tools/utils/.video/미디어1_upscaled_1920x1080.mp4"],
+      "stream_type": "rtsp",
+      "rtsp_port": 1112,
+      "rtmp_port": 1912,
+      "server_ip": "10.2.10.158",
+      "fps": 15,
+      "bitrate": "5M",
+      "packet_loss": 2,
+      "network_delay": 300,
+      "network_jitter": 25,
+      "bandwidth_limit": 0
+    }
+  ]
+}

@@ -15,7 +15,7 @@ for i in {1..6}; do
     echo "[$i/6] $stream_name 테스트 중... ($url)"
     echo "----------------------------------------"
     
-    python3 rtsp_client_packet_analyzer.py --url "$url" --duration 5
+    python3 ../../src/client/rtsp_client_packet_analyzer.py --url "$url" --duration 5
     
     echo
     echo "=========================================="

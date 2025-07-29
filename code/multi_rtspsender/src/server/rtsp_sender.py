@@ -49,6 +49,7 @@ class NetworkSimulator:
     def __init__(self):
         self.active_interfaces = {}
         self.base_interface = self._get_default_interface()
+        self.tc_handles = {}  # stream_id -> tc handle 매핑
         logger.info(f"기본 네트워크 인터페이스: {self.base_interface}")
     
     def _get_default_interface(self):
@@ -94,62 +95,75 @@ class NetworkSimulator:
             except FileNotFoundError:
                 return False
     
-    def setup_virtual_interface(self, stream_id: int, target_ip: str, target_port: int):
-        """가상 네트워크 인터페이스 설정"""
-        veth_name = f"veth{stream_id}"
-        peer_name = f"peer{stream_id}"
-        
+    def setup_network_simulation(self, stream_id: int, target_ip: str, target_port: int):
+        """실제 네트워크 인터페이스에 tc 설정 준비"""
         try:
-            # 기존 가상 인터페이스 제거
-            self.cleanup_virtual_interface(stream_id)
+            # 기존 tc 설정 정리
+            self.cleanup_network_simulation(stream_id)
             
-            # veth pair 생성
-            subprocess.run([
-                'sudo', 'ip', 'link', 'add', veth_name, 
-                'type', 'veth', 'peer', 'name', peer_name
-            ], check=True)
+            # stream별 tc handle 할당 (1:1부터 시작)
+            handle = f"{stream_id + 1}:"
+            self.tc_handles[stream_id] = handle
             
-            # 인터페이스 활성화
-            subprocess.run(['sudo', 'ip', 'link', 'set', veth_name, 'up'], check=True)
-            subprocess.run(['sudo', 'ip', 'link', 'set', peer_name, 'up'], check=True)
-            
-            # IP 주소 할당 (서브넷 분리)
-            veth_ip = f"192.168.{100 + stream_id}.1/24"
-            peer_ip = f"192.168.{100 + stream_id}.2/24"
-            
-            subprocess.run(['sudo', 'ip', 'addr', 'add', veth_ip, 'dev', veth_name], check=True)
-            subprocess.run(['sudo', 'ip', 'addr', 'add', peer_ip, 'dev', peer_name], check=True)
-            
-            self.active_interfaces[stream_id] = {
-                'veth': veth_name,
-                'peer': peer_name,
-                'veth_ip': veth_ip.split('/')[0],
-                'peer_ip': peer_ip.split('/')[0]
-            }
-            
-            logger.info(f"가상 인터페이스 생성: {veth_name} <-> {peer_name}")
+            logger.info(f"스트림 {stream_id}에 tc handle {handle} 할당")
             return True
             
-        except subprocess.CalledProcessError as e:
-            logger.error(f"가상 인터페이스 설정 실패: {e}")
+        except Exception as e:
+            logger.error(f"네트워크 시뮬레이션 준비 실패: {e}")
             return False
     
     def apply_network_conditions(self, stream_id: int, packet_loss: float, 
                                 delay: int, jitter: int, bandwidth_limit: int):
-        """네트워크 조건 적용"""
-        if stream_id not in self.active_interfaces:
-            logger.error(f"스트림 {stream_id}의 가상 인터페이스가 없습니다.")
+        """실제 네트워크 인터페이스에 tc 조건 적용"""
+        if stream_id not in self.tc_handles:
+            logger.error(f"스트림 {stream_id}의 tc handle이 없습니다.")
             return False
         
-        interface_name = self.active_interfaces[stream_id]['veth']
+        # 실제 네트워크 인터페이스 사용 (loopback)
+        interface_name = "lo"
+        handle = self.tc_handles[stream_id]
         
         try:
-            # 기존 qdisc 제거
-            subprocess.run(['sudo', 'tc', 'qdisc', 'del', 'dev', interface_name, 'root'], 
+            # 해당 스트림의 기존 tc 설정만 제거
+            subprocess.run(['sudo', 'tc', 'qdisc', 'del', 'dev', interface_name, 'parent', handle], 
                          capture_output=True)
             
-            # netem qdisc로 네트워크 조건 설정
-            netem_params = ['sudo', 'tc', 'qdisc', 'add', 'dev', interface_name, 'root', 'netem']
+            # 네트워크 시뮬레이션이 필요한 경우에만 적용
+            if packet_loss == 0 and delay == 0 and jitter == 0 and bandwidth_limit == 0:
+                logger.info(f"스트림 {stream_id}: 네트워크 시뮬레이션 없음")
+                return True
+            
+            # HTB root qdisc가 없으면 생성
+            result = subprocess.run(['tc', 'qdisc', 'show', 'dev', interface_name], 
+                                  capture_output=True, text=True)
+            if 'htb' not in result.stdout:
+                subprocess.run([
+                    'sudo', 'tc', 'qdisc', 'add', 'dev', interface_name,
+                    'root', 'handle', '1:', 'htb', 'default', '30'
+                ], check=True)
+                logger.info(f"HTB root qdisc 생성: {interface_name}")
+            
+            # HTB class 생성 (대역폭 제한)
+            if bandwidth_limit > 0:
+                rate = f'{bandwidth_limit}mbit'
+                ceil = f'{bandwidth_limit * 2}mbit'  # burst 허용
+            else:
+                rate = '1000mbit'  # 제한 없음
+                ceil = '1000mbit'
+            
+            # HTB class 추가
+            class_id = f"1:{stream_id + 10}"  # 1:10부터 시작
+            subprocess.run([
+                'sudo', 'tc', 'class', 'add', 'dev', interface_name,
+                'parent', '1:', 'classid', class_id, 'htb',
+                'rate', rate, 'ceil', ceil
+            ], check=True)
+            
+            # netem qdisc를 HTB class에 추가
+            netem_params = [
+                'sudo', 'tc', 'qdisc', 'add', 'dev', interface_name,
+                'parent', class_id, 'handle', f"{stream_id + 20}:", 'netem'
+            ]
             
             # 패킷 손실
             if packet_loss > 0:
@@ -162,84 +176,85 @@ class NetworkSimulator:
                 else:
                     netem_params.extend(['delay', f'{delay}ms'])
             
-            # 대역폭 제한 (tbf qdisc 사용)
-            if bandwidth_limit > 0:
-                # tbf를 root로 먼저 설정하고, netem을 child로 설정
-                rate = f'{bandwidth_limit}mbit'
-                burst = f'{max(bandwidth_limit * 1000, 32000)}'  # 최소 32KB
-                
-                # tbf qdisc를 root로 추가 (대역폭 제한)
-                subprocess.run([
-                    'sudo', 'tc', 'qdisc', 'add', 'dev', interface_name,
-                    'root', 'handle', '1:', 'tbf',
-                    'rate', rate, 'burst', burst, 'limit', str(burst * 2)
-                ], check=True)
-                
-                # netem을 tbf의 child로 추가
-                netem_child_params = ['sudo', 'tc', 'qdisc', 'add', 'dev', interface_name, 'parent', '1:1', 'netem']
-                # 패킷 손실, 지연, 지터 설정만 추가
-                if packet_loss > 0:
-                    netem_child_params.extend(['loss', f'{packet_loss}%'])
-                if delay > 0:
-                    if jitter > 0:
-                        netem_child_params.extend(['delay', f'{delay}ms', f'{jitter}ms'])
-                    else:
-                        netem_child_params.extend(['delay', f'{delay}ms'])
-                
-                subprocess.run(netem_child_params, check=True)
-                
-            else:
-                # 대역폭 제한이 없는 경우 netem만 실행
-                subprocess.run(netem_params, check=True)
+            # netem 설정 적용
+            subprocess.run(netem_params, check=True)
             
-            logger.info(f"스트림 {stream_id} 네트워크 조건 적용: "
+            # 트래픽 필터링 (포트 기반)
+            rtmp_port = 1911 + stream_id
+            subprocess.run([
+                'sudo', 'tc', 'filter', 'add', 'dev', interface_name,
+                'protocol', 'ip', 'parent', '1:', 'prio', '1',
+                'u32', 'match', 'ip', 'sport', str(rtmp_port), '0xffff',
+                'flowid', class_id
+            ], check=True)
+            
+            logger.info(f"스트림 {stream_id} tc 조건 적용 ({interface_name}): "
                        f"손실={packet_loss}%, 지연={delay}ms, 지터={jitter}ms, "
-                       f"대역폭={bandwidth_limit}Mbps")
+                       f"대역폭={bandwidth_limit}Mbps, 포트={rtmp_port}")
             return True
             
         except subprocess.CalledProcessError as e:
-            logger.error(f"네트워크 조건 적용 실패: {e}")
+            logger.error(f"tc 조건 적용 실패: {e}")
+            logger.error(f"명령어 출력: {e.stderr if hasattr(e, 'stderr') else 'N/A'}")
             return False
     
-    def cleanup_virtual_interface(self, stream_id: int):
-        """가상 인터페이스 정리"""
-        veth_name = f"veth{stream_id}"
-        peer_name = f"peer{stream_id}"
+    def cleanup_network_simulation(self, stream_id: int):
+        """tc 설정 정리"""
+        interface_name = "lo"
         
         try:
-            # 기존 인터페이스가 있는지 확인하고 정리
-            result = subprocess.run(['ip', 'link', 'show', veth_name], 
-                                  capture_output=True, text=True)
-            if result.returncode == 0:
-                # qdisc 제거 (있는 경우에만)
-                subprocess.run(['sudo', 'tc', 'qdisc', 'del', 'dev', veth_name, 'root'], 
-                             capture_output=True)
+            if stream_id in self.tc_handles:
+                # HTB class와 netem qdisc 제거
+                class_id = f"1:{stream_id + 10}"
+                netem_handle = f"{stream_id + 20}:"
+                rtmp_port = 1911 + stream_id
                 
-                # 가상 인터페이스 제거 (veth pair는 한쪽만 제거하면 둘 다 제거됨)
-                result = subprocess.run(['sudo', 'ip', 'link', 'del', veth_name], 
-                                      capture_output=True)
-                if result.returncode == 0:
-                    logger.info(f"기존 가상 인터페이스 {veth_name} 정리 완료")
-                else:
-                    logger.warning(f"가상 인터페이스 {veth_name} 삭제 실패: {result.stderr.decode()}")
-            
-            # active_interfaces에서도 제거
-            if stream_id in self.active_interfaces:
-                del self.active_interfaces[stream_id]
+                # 필터 제거
+                subprocess.run([
+                    'sudo', 'tc', 'filter', 'del', 'dev', interface_name,
+                    'protocol', 'ip', 'parent', '1:', 'prio', '1'
+                ], capture_output=True)
+                
+                # netem qdisc 제거
+                subprocess.run([
+                    'sudo', 'tc', 'qdisc', 'del', 'dev', interface_name,
+                    'handle', netem_handle
+                ], capture_output=True)
+                
+                # HTB class 제거
+                subprocess.run([
+                    'sudo', 'tc', 'class', 'del', 'dev', interface_name,
+                    'classid', class_id
+                ], capture_output=True)
+                
+                # tc_handles에서 제거
+                del self.tc_handles[stream_id]
+                logger.info(f"스트림 {stream_id} tc 설정 정리 완료")
                 
         except Exception as e:
-            logger.warning(f"가상 인터페이스 정리 중 오류: {e}")
+            logger.warning(f"tc 설정 정리 중 오류: {e}")
     
     def cleanup_all_interfaces(self):
-        """모든 가상 인터페이스 정리"""
-        for stream_id in list(self.active_interfaces.keys()):
-            self.cleanup_virtual_interface(stream_id)
+        """모든 tc 설정 정리"""
+        for stream_id in list(self.tc_handles.keys()):
+            self.cleanup_network_simulation(stream_id)
+        
+        # HTB root qdisc 완전 제거 (필요시)
+        interface_name = "lo"
+        try:
+            result = subprocess.run(['tc', 'qdisc', 'show', 'dev', interface_name], 
+                                  capture_output=True, text=True)
+            if 'htb' in result.stdout and not self.tc_handles:
+                subprocess.run([
+                    'sudo', 'tc', 'qdisc', 'del', 'dev', interface_name, 'root'
+                ], capture_output=True)
+                logger.info(f"HTB root qdisc 제거: {interface_name}")
+        except Exception as e:
+            logger.warning(f"HTB root qdisc 제거 실패: {e}")
     
     def get_interface_ip(self, stream_id: int):
-        """가상 인터페이스 IP 주소 반환"""
-        if stream_id in self.active_interfaces:
-            return self.active_interfaces[stream_id]['peer_ip']
-        return None
+        """로컬호스트 IP 반환 (실제 네트워크 사용)"""
+        return "127.0.0.1"
 
 class RTSPStreamConfig:
     """RTSP 스트림 설정 클래스"""
@@ -326,21 +341,21 @@ def rtsp_sender_process_tc(stream_id: int, config: RTSPStreamConfig,
     valid_files = [f for f in files_to_play if os.path.exists(f)]
     
     try:
-        # 가상 네트워크 인터페이스 설정
+        # 네트워크 시뮬레이션 설정
         target_ip = config.server_ip
         target_port = config.rtmp_port
         
-        if not network_sim.setup_virtual_interface(stream_id, target_ip, target_port):
-            process_logger.error(f"가상 인터페이스 설정 실패")
-            status_queue.put((stream_id, 'error', "가상 인터페이스 설정 실패"))
+        if not network_sim.setup_network_simulation(stream_id, target_ip, target_port):
+            process_logger.error(f"네트워크 시뮬레이션 설정 실패")
+            status_queue.put((stream_id, 'error', "네트워크 시뮬레이션 설정 실패"))
             return
         
-        # 네트워크 조건 적용
+        # tc 네트워크 조건 적용
         if not network_sim.apply_network_conditions(
             stream_id, config.packet_loss, config.network_delay, 
             config.network_jitter, config.bandwidth_limit):
-            process_logger.error(f"네트워크 조건 적용 실패")
-            status_queue.put((stream_id, 'error', "네트워크 조건 적용 실패"))
+            process_logger.error(f"tc 네트워크 조건 적용 실패")
+            status_queue.put((stream_id, 'error', "tc 네트워크 조건 적용 실패"))
             return
         
         # 파일 목록을 concat 파일로 생성
@@ -382,12 +397,8 @@ def rtsp_sender_process_tc(stream_id: int, config: RTSPStreamConfig,
                 status_queue.put((stream_id, 'error', f"MediaMTX 포트 {rtmp_port} 연결 불가"))
                 return
             
-            # 가상 인터페이스를 통한 출력으로 FFmpeg 명령어 구성
-            veth_ip = network_sim.get_interface_ip(stream_id)
-            if not veth_ip:
-                process_logger.error(f"가상 인터페이스 IP 주소를 가져올 수 없습니다")
-                status_queue.put((stream_id, 'error', "가상 인터페이스 IP 오류"))
-                return
+            # 로컬호스트 IP 사용 (tc 설정이 적용된 실제 네트워크)
+            local_ip = network_sim.get_interface_ip(stream_id)
             
             cmd = [
                 'ffmpeg', '-y',
@@ -420,7 +431,7 @@ def rtsp_sender_process_tc(stream_id: int, config: RTSPStreamConfig,
                 # 오디오 비활성화
                 '-an',
                 
-                # 가상 인터페이스를 통한 RTMP 출력
+                # tc 시뮬레이션이 적용된 RTMP 출력
                 '-f', 'flv',
                 f'rtmp://127.0.0.1:{rtmp_port}/live'
             ]
@@ -511,8 +522,8 @@ def rtsp_sender_process_tc(stream_id: int, config: RTSPStreamConfig,
         except Exception as e:
             process_logger.error(f"FFmpeg 프로세스 종료 오류: {e}")
         
-        # 가상 인터페이스 정리
-        network_sim.cleanup_virtual_interface(stream_id)
+        # tc 설정 정리
+        network_sim.cleanup_network_simulation(stream_id)
         
         # 임시 파일 정리
         try:
@@ -716,7 +727,7 @@ class RTSPSenderManagerTC:
             if self.stop_stream(stream_id):
                 stopped_count += 1
         
-        # 모든 가상 인터페이스 정리
+        # 모든 tc 설정 정리
         self.network_sim.cleanup_all_interfaces()
         
         logger.info(f"총 {stopped_count}개 tc 기반 스트림이 중지되었습니다.")
