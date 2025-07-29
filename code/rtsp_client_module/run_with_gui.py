@@ -157,10 +157,14 @@ class RTSPProcessorGUI:
         self.status_label.pack(side=tk.LEFT, padx=(20, 0))
         
         # 통계 정보 프레임
-        stats_frame = ttk.LabelFrame(main_frame, text="실시간 통계", padding="10")
-        stats_frame.pack(fill=tk.X, pady=(0, 10))
+        print("DEBUG: 통계 프레임 생성 중...")  # 디버그 로그
+        stats_frame = ttk.LabelFrame(main_frame, text="🔥 실시간 통계 🔥", padding="10")
+        stats_frame.pack(fill=tk.X, pady=(10, 10))  # pady 증가
+        stats_frame.configure(relief="solid", borderwidth=2)  # 테두리 강조
         
+        print("DEBUG: setup_statistics_panel 호출 예정...")  # 디버그 로그
         self.setup_statistics_panel(stats_frame)
+        print("DEBUG: setup_statistics_panel 호출 완료")  # 디버그 로그
         
         # 로그 프레임
         log_frame = ttk.LabelFrame(main_frame, text="로그", padding="10")
@@ -198,9 +202,18 @@ class RTSPProcessorGUI:
     
     def setup_statistics_panel(self, parent_frame):
         """통계 정보 패널 설정"""
+        print("DEBUG: setup_statistics_panel 호출됨")  # 디버그 로그
+        
         # 통계 컨테이너를 3개 열로 분할
         stats_container = ttk.Frame(parent_frame)
         stats_container.pack(fill=tk.X, expand=True)
+        
+        print("DEBUG: stats_container 생성됨")  # 디버그 로그
+        
+        # 테스트용 간단한 라벨 추가
+        test_label = ttk.Label(stats_container, text="[TEST] 통계 패널이 보이시나요?", 
+                              font=("Arial", 12, "bold"), foreground="red")
+        test_label.pack(pady=10)
         
         # 왼쪽: 프레임 통계
         frame_stats_frame = ttk.LabelFrame(stats_container, text="프레임 통계", padding="5")
