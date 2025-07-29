@@ -399,21 +399,7 @@ def rtsp_capture_process(source, stream_id, thread_id, blur_queue, preview_queue
             elif frame_count % 100 == 0:
                 logger.info(f"Stream {stream_id}: {frame_count}프레임, 블러큐: {blur_queue.qsize()}")
             
-            # 미리보기 큐에 전송 (간소한 프레임, 3프레임마다)
-            if config.preview_enabled and frame_count % 3 == 0:
-                try:
-                    h, w = frame.shape[:2]
-                    if w > 320:
-                        new_w = 320
-                        new_h = int(h * 320 / w)
-                        preview_frame = cv2.resize(frame, (new_w, new_h))
-                    else:
-                        preview_frame = frame
-                    
-                    preview_queue.put_nowait((stream_id, preview_frame.copy(), 
-                                            f"Thread {thread_id}"))
-                except queue.Full:
-                    pass
+            # 미리보기는 블러 처리 후 blur_worker_process에서 처리
                     
     except Exception as e:
         logger.error(f"캡처 프로세스 오류: {e}")
@@ -422,7 +408,7 @@ def rtsp_capture_process(source, stream_id, thread_id, blur_queue, preview_queue
         logger.info(f"캡처 프로세스 종료 - Stream {stream_id}, 총 {frame_count}개 프레임")
 
 
-def blur_worker_process(worker_id, blur_queue, save_queue, stats_dict, stop_event):
+def blur_worker_process(worker_id, blur_queue, save_queue, preview_queue, stats_dict, stop_event):
     """블러 처리 워커"""
     logger = logging.getLogger(f"BLUR_WORKER_{worker_id}")
     current_pid = os.getpid()
@@ -538,6 +524,24 @@ def blur_worker_process(worker_id, blur_queue, save_queue, stats_dict, stop_even
                             logger.warning(f"Worker {worker_id}: 저장큐 오버플로우")
                         except:
                             pass
+                
+                # 미리보기 큐로 전송 (블러 처리된 프레임, 3프레임마다)
+                if config.preview_enabled and work_item['frame_number'] % 3 == 0:
+                    try:
+                        h, w = processed_frame.shape[:2]
+                        if w > 320:
+                            new_w = 320
+                            new_h = int(h * 320 / w)
+                            preview_frame = cv2.resize(processed_frame, (new_w, new_h))
+                        else:
+                            preview_frame = processed_frame
+                        
+                        preview_queue.put_nowait((stream_id, preview_frame.copy(), 
+                                                f"Blurred Thread {thread_id}"))
+                    except queue.Full:
+                        pass  # 미리보기 큐가 가득 찬 경우 무시
+                    except Exception as e:
+                        logger.debug(f"Worker {worker_id}: 미리보기 큐 전송 실패 - {e}")
                 
                 # 통계 업데이트
                 stats_dict[f'{stream_id}_processed'] = stats_dict.get(f'{stream_id}_processed', 0) + 1

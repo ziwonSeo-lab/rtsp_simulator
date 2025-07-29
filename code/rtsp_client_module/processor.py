@@ -163,7 +163,7 @@ class SharedPoolRTSPProcessor:
         for i in range(self.config.blur_workers):
             proc = Process(
                 target=blur_worker_process,
-                args=(i+1, self.blur_queue, self.save_queue, 
+                args=(i+1, self.blur_queue, self.save_queue, self.preview_queue,
                       self.stats_dict, self.stop_event),
                 name=f"BlurWorker_{i+1}"
             )

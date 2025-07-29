@@ -54,9 +54,11 @@ class RTSPProcessorGUI:
         
         # 미리보기 관련 변수
         self.preview_enabled = True
-        self.preview_frame_queue = queue.Queue(maxsize=10)
+        self.preview_frame_queue = queue.Queue(maxsize=50)  # 다중 소스를 위해 크기 증가
         self.preview_thread = None
-        self.current_preview_image = None
+        self.preview_canvases = {}  # 소스별 캔버스 딕셔너리
+        self.preview_labels = {}    # 소스별 라벨 딕셔너리  
+        self.current_preview_images = {}  # 소스별 이미지 참조 딕셔너리
         
         # config.py의 기본값 로드
         default_config = RTSPConfig()
@@ -90,35 +92,23 @@ class RTSPProcessorGUI:
         config_frame = ttk.LabelFrame(top_container, text="설정", padding="10")
         config_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
         
-        # 미리보기 프레임 (오른쪽)
-        preview_frame = ttk.LabelFrame(top_container, text="실시간 미리보기", padding="10")
-        preview_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 0))
-        
-        # 미리보기 캔버스
-        self.preview_canvas = tk.Canvas(preview_frame, width=320, height=240, bg="black")
-        self.preview_canvas.pack(padx=5, pady=5)
-        
-        # 미리보기 정보 라벨
-        self.preview_info_label = ttk.Label(preview_frame, text="미리보기: 대기 중", 
-                                          font=("Arial", 9))
-        self.preview_info_label.pack(pady=(5, 0))
+        # 미리보기 프레임 (오른쪽) - 동적으로 생성될 예정
+        self.preview_main_frame = ttk.LabelFrame(top_container, text="실시간 미리보기", padding="5")
+        self.preview_main_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 0))
         
         # 미리보기 활성화 체크박스
         self.preview_var = tk.BooleanVar(value=self.preview_enabled)
-        preview_check = ttk.Checkbutton(preview_frame, text="미리보기 활성화", 
+        preview_check = ttk.Checkbutton(self.preview_main_frame, text="미리보기 활성화", 
                                       variable=self.preview_var,
                                       command=self.toggle_preview)
-        preview_check.pack(pady=(5, 0))
+        preview_check.pack(pady=(0, 5))
         
-        # RTSP 소스 설정
-        source_frame = ttk.Frame(config_frame)
-        source_frame.pack(fill=tk.X, pady=(0, 5))
+        # 미리보기 컨테이너 (동적 캔버스들이 들어갈 공간)
+        self.preview_container = ttk.Frame(self.preview_main_frame)
+        self.preview_container.pack(fill=tk.BOTH, expand=True)
         
-        ttk.Label(source_frame, text="RTSP 소스:").pack(side=tk.LEFT)
-        self.source_entry = ttk.Entry(source_frame, width=50)
-        self.source_entry.pack(side=tk.LEFT, padx=(5, 0), fill=tk.X, expand=True)
-        # config.py의 첫 번째 소스를 기본값으로 사용
-        self.source_entry.insert(0, self.sources[0] if self.sources else "rtsp://example.com/stream")
+        # RTSP 소스 설정 (다중 소스 지원)
+        self.setup_sources_panel(config_frame)
         
         # 스레드 수 설정
         thread_frame = ttk.Frame(config_frame)
@@ -180,7 +170,7 @@ class RTSPProcessorGUI:
         log_text_frame = ttk.Frame(log_frame)
         log_text_frame.pack(fill=tk.BOTH, expand=True)
         
-        self.log_text = tk.Text(log_text_frame, height=15, width=80)
+        self.log_text = tk.Text(log_text_frame, height=8, width=80)  # 높이를 15에서 8로 축소
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         # 스크롤바
@@ -201,6 +191,10 @@ class RTSPProcessorGUI:
         
         # 통계 데이터 저장
         self.last_stats = {}
+        
+        # 소스 관리 변수
+        self.source_entries = []  # 소스 입력 위젯들
+        self.source_frames = []   # 소스 프레임들
     
     def setup_statistics_panel(self, parent_frame):
         """통계 정보 패널 설정"""
@@ -280,6 +274,150 @@ class RTSPProcessorGUI:
         self.queue_size_label = ttk.Label(resource_stats_frame, text="0/0/0", foreground="brown")
         self.queue_size_label.grid(row=3, column=1, sticky='w')
     
+    def setup_sources_panel(self, parent_frame):
+        """RTSP 소스 패널 설정"""
+        # 소스 설정 프레임
+        sources_frame = ttk.LabelFrame(parent_frame, text="RTSP 소스 목록", padding="5")
+        sources_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        # 소스 컨테이너 (스크롤 가능)
+        canvas = tk.Canvas(sources_frame, height=120)
+        scrollbar = ttk.Scrollbar(sources_frame, orient="vertical", command=canvas.yview)
+        self.sources_scrollable_frame = ttk.Frame(canvas)
+        
+        self.sources_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=self.sources_scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # 초기 소스들 로드
+        self.load_initial_sources()
+        
+        # 소스 추가/삭제 버튼
+        button_frame = ttk.Frame(sources_frame)
+        button_frame.pack(fill=tk.X, pady=(5, 0))
+        
+        add_btn = ttk.Button(button_frame, text="소스 추가", command=self.add_source_entry)
+        add_btn.pack(side=tk.LEFT, padx=(0, 5))
+        
+        remove_btn = ttk.Button(button_frame, text="소스 삭제", command=self.remove_source_entry)
+        remove_btn.pack(side=tk.LEFT)
+    
+    def load_initial_sources(self):
+        """초기 소스들 로드"""
+        # config.py의 기본 소스들을 로드
+        for i, source in enumerate(self.sources):
+            self.add_source_entry(source)
+            
+        # 최소 하나의 소스는 있어야 함
+        if not self.source_entries:
+            self.add_source_entry("rtsp://example.com/stream")
+    
+    def add_source_entry(self, initial_value=""):
+        """새 소스 입력 추가"""
+        frame = ttk.Frame(self.sources_scrollable_frame)
+        frame.pack(fill=tk.X, pady=2)
+        
+        # 소스 번호 라벨
+        source_num = len(self.source_entries) + 1
+        ttk.Label(frame, text=f"소스 {source_num}:", width=8).pack(side=tk.LEFT)
+        
+        # 소스 입력 필드
+        entry = ttk.Entry(frame, width=50)
+        entry.pack(side=tk.LEFT, padx=(5, 0), fill=tk.X, expand=True)
+        
+        if initial_value:
+            entry.insert(0, initial_value)
+        
+        self.source_entries.append(entry)
+        self.source_frames.append(frame)
+        
+        # 미리보기 캔버스도 업데이트
+        self.update_preview_canvases()
+    
+    def remove_source_entry(self):
+        """마지막 소스 입력 제거"""
+        if len(self.source_entries) > 1:  # 최소 하나는 유지
+            # 마지막 항목 제거
+            last_entry = self.source_entries.pop()
+            last_frame = self.source_frames.pop()
+            
+            last_frame.destroy()
+            
+            # 미리보기 캔버스도 업데이트
+            self.update_preview_canvases()
+    
+    def get_sources_from_entries(self):
+        """입력 필드에서 소스 목록 가져오기"""
+        sources = []
+        for entry in self.source_entries:
+            source = entry.get().strip()
+            if source:  # 빈 문자열이 아닌 경우만 추가
+                sources.append(source)
+        return sources
+    
+    def update_preview_canvases(self):
+        """소스 개수에 따라 미리보기 캔버스 업데이트"""
+        # 기존 캔버스들 제거
+        for widget in self.preview_container.winfo_children():
+            widget.destroy()
+        
+        self.preview_canvases.clear()
+        self.preview_labels.clear()
+        self.current_preview_images.clear()
+        
+        # 현재 소스 개수 확인
+        source_count = len(self.source_entries)
+        
+        if source_count == 0:
+            return
+        
+        # 그리드 레이아웃 계산 (최대 2열)
+        cols = min(2, source_count)
+        rows = (source_count + cols - 1) // cols
+        
+        # 캔버스 크기 계산
+        canvas_width = 200 if source_count > 1 else 320
+        canvas_height = 150 if source_count > 1 else 240
+        
+        for i in range(source_count):
+            # 캔버스 프레임
+            canvas_frame = ttk.Frame(self.preview_container)
+            row = i // cols
+            col = i % cols
+            canvas_frame.grid(row=row, column=col, padx=2, pady=2, sticky="nsew")
+            
+            # 소스 라벨
+            source_label = ttk.Label(canvas_frame, text=f"소스 {i+1}", 
+                                   font=("Arial", 8, "bold"))
+            source_label.pack()
+            
+            # 미리보기 캔버스
+            canvas = tk.Canvas(canvas_frame, width=canvas_width, height=canvas_height, bg="black")
+            canvas.pack(padx=2, pady=2)
+            
+            # 상태 라벨
+            status_label = ttk.Label(canvas_frame, text="대기 중", font=("Arial", 7))
+            status_label.pack()
+            
+            # 딕셔너리에 저장
+            stream_id = f"stream_{i+1}"
+            self.preview_canvases[stream_id] = canvas
+            self.preview_labels[stream_id] = status_label
+            self.current_preview_images[stream_id] = None
+        
+        # 그리드 가중치 설정
+        for i in range(cols):
+            self.preview_container.columnconfigure(i, weight=1)
+        for i in range(rows):
+            self.preview_container.rowconfigure(i, weight=1)
+    
     def setup_logging_handler(self):
         """로그 핸들러 설정"""
         class TextHandler(logging.Handler):
@@ -311,12 +449,16 @@ class RTSPProcessorGUI:
         """미리보기 활성화/비활성화 토글"""
         self.preview_enabled = self.preview_var.get()
         if not self.preview_enabled:
-            # 미리보기 비활성화 시 캔버스 클리어
-            self.preview_canvas.delete("all")
-            self.preview_info_label.config(text="미리보기: 비활성화")
-            self.current_preview_image = None
+            # 미리보기 비활성화 시 모든 캔버스 클리어
+            for stream_id, canvas in self.preview_canvases.items():
+                canvas.delete("all")
+                if stream_id in self.preview_labels:
+                    self.preview_labels[stream_id].config(text="비활성화")
+            self.current_preview_images.clear()
         else:
-            self.preview_info_label.config(text="미리보기: 대기 중")
+            # 미리보기 활성화 시 상태 초기화
+            for stream_id, label in self.preview_labels.items():
+                label.config(text="대기 중")
     
     def update_preview_frame(self, frame):
         """미리보기 프레임 업데이트"""
@@ -344,32 +486,37 @@ class RTSPProcessorGUI:
         """미리보기 프레임 처리 스레드"""
         while self.running and self.preview_enabled:
             try:
-                # 큐에서 프레임 가져오기 (타임아웃 1초)
-                frame = self.preview_frame_queue.get(timeout=1.0)
+                # 큐에서 프레임 데이터 가져오기 (타임아웃 1초)
+                frame_data = self.preview_frame_queue.get(timeout=1.0)
                 
-                if frame is not None:
-                    # OpenCV 프레임을 PIL Image로 변환
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    
-                    # 미리보기 크기에 맞게 리사이즈
-                    canvas_width = self.preview_canvas.winfo_width()
-                    canvas_height = self.preview_canvas.winfo_height()
-                    
-                    if canvas_width > 1 and canvas_height > 1:  # 캔버스가 초기화된 경우
-                        frame_resized = cv2.resize(frame_rgb, (canvas_width, canvas_height))
+                if frame_data is not None:
+                    # 프레임 데이터는 (stream_id, frame, info) 튜플 형태
+                    if isinstance(frame_data, tuple) and len(frame_data) >= 3:
+                        stream_id, frame, info = frame_data[:3]
                         
-                        # PIL Image로 변환
-                        pil_image = Image.fromarray(frame_resized)
-                        tk_image = ImageTk.PhotoImage(pil_image)
-                        
-                        # GUI 스레드에서 캔버스 업데이트
-                        self.root.after(0, self._update_canvas, tk_image)
-                        
-                        # 현재 시간 업데이트
-                        current_time = datetime.now().strftime("%H:%M:%S")
-                        self.root.after(0, lambda: self.preview_info_label.config(
-                            text=f"미리보기: {current_time}"
-                        ))
+                        # 해당 스트림의 캔버스가 존재하는지 확인
+                        if stream_id in self.preview_canvases:
+                            # OpenCV 프레임을 PIL Image로 변환
+                            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                            
+                            # 미리보기 크기에 맞게 리사이즈
+                            canvas = self.preview_canvases[stream_id]
+                            canvas_width = canvas.winfo_width()
+                            canvas_height = canvas.winfo_height()
+                            
+                            if canvas_width > 1 and canvas_height > 1:  # 캔버스가 초기화된 경우
+                                frame_resized = cv2.resize(frame_rgb, (canvas_width, canvas_height))
+                                
+                                # PIL Image로 변환
+                                pil_image = Image.fromarray(frame_resized)
+                                tk_image = ImageTk.PhotoImage(pil_image)
+                                
+                                # GUI 스레드에서 캔버스 업데이트
+                                self.root.after(0, self._update_canvas, stream_id, tk_image)
+                                
+                                # 현재 시간 업데이트
+                                current_time = datetime.now().strftime("%H:%M:%S")
+                                self.root.after(0, self._update_preview_label, stream_id, current_time)
                 
             except queue.Empty:
                 # 타임아웃 - 정상적인 상황
@@ -378,19 +525,29 @@ class RTSPProcessorGUI:
                 logger.error(f"미리보기 처리 오류: {e}")
                 time.sleep(0.1)
     
-    def _update_canvas(self, tk_image):
+    def _update_canvas(self, stream_id, tk_image):
         """GUI 스레드에서 캔버스 업데이트"""
         try:
-            self.preview_canvas.delete("all")
-            self.preview_canvas.create_image(
-                self.preview_canvas.winfo_width() // 2,
-                self.preview_canvas.winfo_height() // 2,
-                image=tk_image
-            )
-            # 이미지 참조 유지 (가비지 컬렉션 방지)
-            self.current_preview_image = tk_image
+            if stream_id in self.preview_canvases:
+                canvas = self.preview_canvases[stream_id]
+                canvas.delete("all")
+                canvas.create_image(
+                    canvas.winfo_width() // 2,
+                    canvas.winfo_height() // 2,
+                    image=tk_image
+                )
+                # 이미지 참조 유지 (가비지 컬렉션 방지)
+                self.current_preview_images[stream_id] = tk_image
         except Exception as e:
-            logger.error(f"캔버스 업데이트 오류: {e}")
+            logger.error(f"캔버스 업데이트 오류 ({stream_id}): {e}")
+    
+    def _update_preview_label(self, stream_id, time_text):
+        """GUI 스레드에서 미리보기 라벨 업데이트"""
+        try:
+            if stream_id in self.preview_labels:
+                self.preview_labels[stream_id].config(text=f"실시간 ({time_text})")
+        except Exception as e:
+            logger.error(f"미리보기 라벨 업데이트 오류 ({stream_id}): {e}")
     
     def start_preview_thread(self):
         """미리보기 스레드 시작"""
@@ -415,10 +572,12 @@ class RTSPProcessorGUI:
             except queue.Empty:
                 break
         
-        # 캔버스 클리어
-        self.preview_canvas.delete("all")
-        self.preview_info_label.config(text="미리보기: 중지됨")
-        self.current_preview_image = None
+        # 모든 캔버스 클리어
+        for stream_id, canvas in self.preview_canvases.items():
+            canvas.delete("all")
+            if stream_id in self.preview_labels:
+                self.preview_labels[stream_id].config(text="미리보기: 중지됨")
+        self.current_preview_images.clear()
         logger.info("미리보기 스레드 중지됨")
     
     def update_statistics_display(self, stats):
@@ -515,14 +674,19 @@ class RTSPProcessorGUI:
     def start_processing(self):
         """처리 시작"""
         try:
-            # 설정 값 읽기
-            source = self.source_entry.get().strip()
-            if not source:
-                messagebox.showerror("오류", "RTSP 소스를 입력해주세요.")
+            # 다중 소스 설정 값 읽기
+            sources = self.get_sources_from_entries()
+            if not sources:
+                messagebox.showerror("오류", "최소 하나의 RTSP 소스를 입력해주세요.")
                 return
-            
-            sources = [source]
             thread_count = int(self.thread_var.get())
+            
+            # 스레드 수가 소스 수보다 적으면 자동 조정
+            if thread_count < len(sources):
+                thread_count = len(sources)
+                self.thread_var.set(str(thread_count))
+                logger.info(f"스레드 수를 소스 수에 맞춰 {thread_count}개로 자동 조정")
+            
             save_enabled = self.save_var.get()
             save_path = self.save_path_entry.get().strip()
             
