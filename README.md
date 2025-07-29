@@ -112,6 +112,7 @@ pip install numpy
 pip install psutil
 pip install python-dotenv
 pip install GPUtil  # GPU 모니터링용 (선택사항)
+pip install ultralytics
 ```
 
 ### 5. FFmpeg 설치
