@@ -603,14 +603,25 @@ def blur_worker_process(worker_id, blur_queue, save_queue, preview_queue, stats_
         logger.info(f"블러 워커 종료 - Worker {worker_id}, 처리: {processed_count}")
 
 
-def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_output_dir):
-    """저장 워커"""
+def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_output_dir, file_move_queue=None, config=None):
+    """저장 워커 (2단계 저장 지원)"""
     logger = logging.getLogger(f"SAVE_WORKER_{worker_id}")
     current_pid = os.getpid()
     logger.info(f"💾 저장 워커 실행 중 - PID: {current_pid}, Worker: {worker_id}")
     logger.info(f"   🆔 프로세스 ID: {current_pid}")
     logger.info(f"   🔧 워커 ID: {worker_id}")
     logger.info(f"   📁 저장 경로: {base_output_dir}")
+    
+    # 2단계 저장 설정
+    two_stage_enabled = config and hasattr(config, 'two_stage_storage') and config.two_stage_storage
+    if two_stage_enabled:
+        logger.info(f"   🔄 2단계 저장 활성화: SSD({config.ssd_temp_path}) → HDD({config.hdd_final_path})")
+        temp_prefix = getattr(config, 'temp_file_prefix', 't_')
+        # 2단계 저장일 때는 SSD 경로 사용
+        base_output_dir = config.ssd_temp_path
+    else:
+        temp_prefix = ""
+        logger.info(f"   📂 일반 저장 모드")
     
     saved_count = 0
     video_writers = {}
@@ -678,12 +689,57 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
                     if (stream_id not in video_writers or 
                         video_frame_counts[stream_id] >= config.save_interval):
                         
-                        # 기존 비디오 writer 종료
+                        # 기존 비디오 writer 종료 및 2단계 저장 처리
                         if stream_id in video_writers:
                             try:
+                                current_filepath = None
+                                current_base_filename = None
+                                
+                                # 현재 파일 정보 저장 (2단계 저장용)
+                                if hasattr(video_writers[stream_id], 'filepath'):
+                                    current_filepath = video_writers[stream_id].filepath
+                                    if two_stage_enabled and temp_prefix in os.path.basename(current_filepath):
+                                        current_base_filename = os.path.basename(current_filepath).replace(temp_prefix, "", 1)
+                                
                                 video_writers[stream_id].release()
                                 logger.info(f"Stream {stream_id}: 비디오 저장 완료 - {video_frame_counts[stream_id]}프레임 "
                                           f"(part{file_counters[stream_id]:03d})")
+                                
+                                # 2단계 저장: 임시 파일명에서 접두사 제거 후 파일 이동 큐에 추가
+                                if two_stage_enabled and current_filepath and current_base_filename and file_move_queue:
+                                    # 임시 파일에서 접두사 제거
+                                    final_temp_filepath = current_filepath.replace(temp_prefix, "", 1)
+                                    
+                                    try:
+                                        # 파일명에서 접두사 제거 (이름 변경)
+                                        if os.path.exists(current_filepath):
+                                            os.rename(current_filepath, final_temp_filepath)
+                                            logger.info(f"Stream {stream_id}: 임시 파일 이름 변경 완료 - {os.path.basename(final_temp_filepath)}")
+                                            
+                                            # 파일 이동 큐에 추가
+                                            move_item = {
+                                                'temp_filepath': final_temp_filepath,
+                                                'final_filename': current_base_filename,
+                                                'stream_id': stream_id
+                                            }
+                                            
+                                            try:
+                                                file_move_queue.put_nowait(move_item)
+                                                logger.info(f"Stream {stream_id}: 파일 이동 대기열에 추가됨 - {current_base_filename}")
+                                            except queue.Full:
+                                                logger.warning(f"Stream {stream_id}: 파일 이동 큐가 가득참 - {current_base_filename}")
+                                                # 큐가 가득 찬 경우 기존 항목 제거 후 재시도
+                                                try:
+                                                    file_move_queue.get_nowait()
+                                                    file_move_queue.put_nowait(move_item)
+                                                except:
+                                                    pass
+                                        else:
+                                            logger.warning(f"Stream {stream_id}: 임시 파일을 찾을 수 없음 - {current_filepath}")
+                                    
+                                    except Exception as rename_error:
+                                        logger.error(f"Stream {stream_id}: 임시 파일 이름 변경 실패 - {rename_error}")
+                                
                             except Exception as e:
                                 logger.error(f"Stream {stream_id}: 기존 writer 해제 오류 - {e}")
                             finally:
@@ -694,10 +750,18 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
                         file_counters[stream_id] += 1
                         video_frame_counts[stream_id] = 0
                         
-                        # 파일명 생성
+                        # 파일명 생성 (2단계 저장 지원)
                         timestamp_str = timestamp.strftime("%Y%m%d_%H%M%S")
-                        filename = f"{stream_id}_{timestamp_str}_part{file_counters[stream_id]:03d}.{config.container_format}"
-                        filepath = os.path.join(stream_dirs[stream_id], filename)
+                        base_filename = f"{stream_id}_{timestamp_str}_part{file_counters[stream_id]:03d}.{config.container_format}"
+                        
+                        if two_stage_enabled:
+                            # 임시 파일명 (접두사 추가)
+                            temp_filename = f"{temp_prefix}{base_filename}"
+                            filepath = os.path.join(stream_dirs[stream_id], temp_filename)
+                        else:
+                            # 일반 저장
+                            filename = base_filename
+                            filepath = os.path.join(stream_dirs[stream_id], filename)
                         
                         # 비디오 writer 초기화
                         height, width = frame.shape[:2]
@@ -867,11 +931,126 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
     except Exception as e:
         logger.error(f"저장 워커 오류: {e}")
     finally:
-        # 모든 비디오 writer 정리
+        # 모든 비디오 writer 정리 및 2단계 저장 처리
         for stream_id, writer in video_writers.items():
             try:
+                current_filepath = None
+                current_base_filename = None
+                
+                # 현재 파일 정보 저장 (2단계 저장용)
+                if hasattr(writer, 'filepath'):
+                    current_filepath = writer.filepath
+                    if two_stage_enabled and temp_prefix in os.path.basename(current_filepath):
+                        current_base_filename = os.path.basename(current_filepath).replace(temp_prefix, "", 1)
+                
                 writer.release()
-                logger.info(f"Stream {stream_id}: 최종 비디오 저장 완료 - {video_frame_counts[stream_id]}프레임")
-            except:
-                pass
+                logger.info(f"Stream {stream_id}: 최종 비디오 저장 완료 - {video_frame_counts.get(stream_id, 0)}프레임")
+                
+                # 2단계 저장: 종료 시에도 남은 파일 처리
+                if two_stage_enabled and current_filepath and current_base_filename and file_move_queue:
+                    final_temp_filepath = current_filepath.replace(temp_prefix, "", 1)
+                    
+                    try:
+                        if os.path.exists(current_filepath):
+                            os.rename(current_filepath, final_temp_filepath)
+                            logger.info(f"Stream {stream_id}: 종료 시 임시 파일 이름 변경 완료 - {os.path.basename(final_temp_filepath)}")
+                            
+                            # 파일 이동 큐에 추가
+                            move_item = {
+                                'temp_filepath': final_temp_filepath,
+                                'final_filename': current_base_filename,
+                                'stream_id': stream_id
+                            }
+                            
+                            try:
+                                file_move_queue.put_nowait(move_item)
+                                logger.info(f"Stream {stream_id}: 종료 시 파일 이동 대기열에 추가됨 - {current_base_filename}")
+                            except queue.Full:
+                                logger.warning(f"Stream {stream_id}: 종료 시 파일 이동 큐가 가득참 - {current_base_filename}")
+                    
+                    except Exception as rename_error:
+                        logger.error(f"Stream {stream_id}: 종료 시 임시 파일 이름 변경 실패 - {rename_error}")
+                
+            except Exception as cleanup_error:
+                logger.error(f"Stream {stream_id}: 최종 정리 중 오류 - {cleanup_error}")
+                
         logger.info(f"저장 워커 종료 - Worker {worker_id}, 저장: {saved_count}")
+
+
+def file_move_worker_process(worker_id, file_move_queue, stats_dict, stop_event, ssd_path, hdd_path, temp_prefix):
+    """파일 이동 워커 (SSD → HDD)"""
+    logger = logging.getLogger(f"FILE_MOVE_WORKER_{worker_id}")
+    current_pid = os.getpid()
+    logger.info(f"🚛 파일 이동 워커 실행 중 - PID: {current_pid}, Worker: {worker_id}")
+    logger.info(f"   🆔 프로세스 ID: {current_pid}")
+    logger.info(f"   🔧 워커 ID: {worker_id}")
+    logger.info(f"   📂 SSD 경로: {ssd_path}")
+    logger.info(f"   📁 HDD 경로: {hdd_path}")
+    
+    moved_count = 0
+    
+    try:
+        # HDD 최종 저장 경로 생성
+        os.makedirs(hdd_path, exist_ok=True)
+        
+        while not stop_event.is_set() or not file_move_queue.empty():
+            try:
+                move_item = file_move_queue.get(timeout=1.0)
+                
+                if not isinstance(move_item, dict):
+                    logger.warning(f"Worker {worker_id}: 잘못된 move_item 형식 - {type(move_item)}")
+                    continue
+                
+                # move_item 구조: {'temp_filepath': str, 'final_filename': str, 'stream_id': str}
+                temp_filepath = move_item['temp_filepath']
+                final_filename = move_item['final_filename']
+                stream_id = move_item['stream_id']
+                
+                # 임시 파일이 존재하는지 확인
+                if not os.path.exists(temp_filepath):
+                    logger.warning(f"Worker {worker_id}: 임시 파일이 존재하지 않음 - {temp_filepath}")
+                    continue
+                
+                # HDD 스트림별 디렉토리 생성
+                hdd_stream_dir = os.path.join(hdd_path, stream_id)
+                os.makedirs(hdd_stream_dir, exist_ok=True)
+                
+                # 최종 파일 경로
+                final_filepath = os.path.join(hdd_stream_dir, final_filename)
+                
+                # 파일 이동 시도
+                try:
+                    import shutil
+                    shutil.move(temp_filepath, final_filepath)
+                    moved_count += 1
+                    
+                    # 통계 업데이트
+                    stats_dict[f'{stream_id}_moved'] = stats_dict.get(f'{stream_id}_moved', 0) + 1
+                    
+                    logger.info(f"Worker {worker_id}: 파일 이동 완료 - {final_filename}")
+                    
+                    if moved_count % 10 == 0:
+                        logger.info(f"Worker {worker_id}: {moved_count}개 파일 이동 완료, 큐: {file_move_queue.qsize()}")
+                    
+                except Exception as move_error:
+                    logger.error(f"Worker {worker_id}: 파일 이동 실패 - {temp_filepath} → {final_filepath}")
+                    logger.error(f"Worker {worker_id}: 이동 오류: {move_error}")
+                    
+                    # 이동 실패 시 임시 파일 정리
+                    try:
+                        if os.path.exists(temp_filepath):
+                            os.remove(temp_filepath)
+                            logger.warning(f"Worker {worker_id}: 이동 실패한 임시 파일 정리됨 - {temp_filepath}")
+                    except Exception as cleanup_error:
+                        logger.error(f"Worker {worker_id}: 임시 파일 정리 실패 - {cleanup_error}")
+                        
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"파일 이동 워커 오류: {e}")
+                continue
+                
+    except Exception as e:
+        logger.error(f"파일 이동 워커 오류: {e}")
+    finally:
+        logger.info(f"파일 이동 워커 종료 - Worker {worker_id}, 이동: {moved_count}")

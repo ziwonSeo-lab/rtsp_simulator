@@ -18,7 +18,7 @@ import queue
 # 로컬 모듈 임포트
 from .config import RTSPConfig
 from .statistics import FrameCounter, ResourceMonitor, PerformanceProfiler
-from .workers import rtsp_capture_process, blur_worker_process, save_worker_process
+from .workers import rtsp_capture_process, blur_worker_process, save_worker_process, file_move_worker_process
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +59,17 @@ class SharedPoolRTSPProcessor:
         self.stats_dict = self.manager.dict()
         self.stop_event = Event()
         
+        # 2단계 저장을 위한 파일 이동 큐
+        if hasattr(config, 'two_stage_storage') and config.two_stage_storage:
+            self.file_move_queue = Queue(maxsize=getattr(config, 'file_move_queue_size', 100))
+        else:
+            self.file_move_queue = None
+        
         # 프로세스 리스트
         self.capture_processes = []
         self.blur_processes = []
         self.save_processes = []
+        self.file_move_processes = []
         
         self.running = False
         
@@ -178,19 +185,38 @@ class SharedPoolRTSPProcessor:
                 proc = Process(
                     target=save_worker_process,
                     args=(i+1, self.save_queue, self.stats_dict, 
-                          self.stop_event, self.config.save_path),
+                          self.stop_event, self.config.save_path, 
+                          self.file_move_queue, self.config),
                     name=f"SaveWorker_{i+1}"
                 )
                 proc.start()
                 self.save_processes.append(proc)
                 logger.info(f"💾 저장 워커 시작: Worker {i+1} (PID: {proc.pid})")
         
-        total = len(self.capture_processes) + len(self.blur_processes) + len(self.save_processes)
+        # 파일 이동 워커들 시작 (2단계 저장 활성화 시)
+        if (hasattr(self.config, 'two_stage_storage') and self.config.two_stage_storage and 
+            self.file_move_queue is not None):
+            logger.info("-" * 40)
+            for i in range(getattr(self.config, 'file_move_workers', 2)):
+                proc = Process(
+                    target=file_move_worker_process,
+                    args=(i+1, self.file_move_queue, self.stats_dict, 
+                          self.stop_event, self.config.ssd_temp_path, 
+                          self.config.hdd_final_path, self.config.temp_file_prefix),
+                    name=f"FileMoveWorker_{i+1}"
+                )
+                proc.start()
+                self.file_move_processes.append(proc)
+                logger.info(f"🚛 파일 이동 워커 시작: Worker {i+1} (PID: {proc.pid})")
+        
+        total = (len(self.capture_processes) + len(self.blur_processes) + 
+                len(self.save_processes) + len(self.file_move_processes))
         logger.info("=" * 60)
         logger.info(f"✅ 총 {total}개 프로세스 시작 완료")
         logger.info(f"   📹 캡처: {len(self.capture_processes)}개")
         logger.info(f"   🔍 블러: {len(self.blur_processes)}개")
         logger.info(f"   💾 저장: {len(self.save_processes)}개")
+        logger.info(f"   🚛 이동: {len(self.file_move_processes)}개")
         logger.info("=" * 60)
     
     def stop(self):
@@ -211,7 +237,8 @@ class SharedPoolRTSPProcessor:
         all_processes = [
             ("캡처", self.capture_processes, 5),
             ("블러", self.blur_processes, 10),
-            ("저장", self.save_processes, 20)
+            ("저장", self.save_processes, 20),
+            ("파일이동", self.file_move_processes, 15)
         ]
         
         for name, processes, timeout in all_processes:
@@ -245,6 +272,7 @@ class SharedPoolRTSPProcessor:
         total_received = sum(v for k, v in self.stats_dict.items() if k.endswith('_received'))
         total_processed = sum(v for k, v in self.stats_dict.items() if k.endswith('_processed'))
         total_saved = sum(v for k, v in self.stats_dict.items() if k.endswith('_saved'))
+        total_moved = sum(v for k, v in self.stats_dict.items() if k.endswith('_moved'))
         total_lost = sum(v for k, v in self.stats_dict.items() if k.endswith('_lost'))
         
         # 스레드별 연결 상태 생성
@@ -262,20 +290,24 @@ class SharedPoolRTSPProcessor:
             'received_frames': total_received,
             'processed_frames': total_processed,
             'saved_frames': total_saved,
+            'moved_frames': total_moved,
             'lost_frames': total_lost,
             'error_frames': 0,
             'total_frames': total_received,
             'loss_rate': total_lost / max(total_received, 1) * 100,
             'processing_rate': total_processed / max(total_received, 1) * 100,
             'save_rate': total_saved / max(total_processed, 1) * 100,
+            'move_rate': total_moved / max(total_saved, 1) * 100 if hasattr(self.config, 'two_stage_storage') and self.config.two_stage_storage else 0,
             'thread_count': self.config.thread_count,
             'queue_size': 0,
             'preview_queue_sizes': {0: self.preview_queue.qsize()},
             'blur_queue_size': self.blur_queue.qsize(),
             'save_queue_size': self.save_queue.qsize(),
+            'file_move_queue_size': self.file_move_queue.qsize() if self.file_move_queue else 0,
             'connection_status': connection_status,
             'resource_stats': self.resource_monitor.get_current_stats(),
-            'performance_stats': self.performance_profiler.get_all_profiles()
+            'performance_stats': self.performance_profiler.get_all_profiles(),
+            'two_stage_storage': hasattr(self.config, 'two_stage_storage') and self.config.two_stage_storage
         }
         
         return stats
@@ -338,16 +370,24 @@ class SharedPoolRTSPProcessor:
             Dict[str, Any]: 스레드별 통계 정보
         """
         stream_id = f"stream_{thread_id+1}"
+        received = self.stats_dict.get(f'{stream_id}_received', 0)
+        processed = self.stats_dict.get(f'{stream_id}_processed', 0)
+        saved = self.stats_dict.get(f'{stream_id}_saved', 0)
+        moved = self.stats_dict.get(f'{stream_id}_moved', 0)
+        lost = self.stats_dict.get(f'{stream_id}_lost', 0)
+        
         return {
-            'received_frames': self.stats_dict.get(f'{stream_id}_received', 0),
-            'processed_frames': self.stats_dict.get(f'{stream_id}_processed', 0),
-            'saved_frames': self.stats_dict.get(f'{stream_id}_saved', 0),
-            'lost_frames': self.stats_dict.get(f'{stream_id}_lost', 0),
+            'received_frames': received,
+            'processed_frames': processed,
+            'saved_frames': saved,
+            'moved_frames': moved,
+            'lost_frames': lost,
             'error_frames': 0,
-            'total_frames': self.stats_dict.get(f'{stream_id}_received', 0),
-            'loss_rate': self.stats_dict.get(f'{stream_id}_lost', 0) / max(self.stats_dict.get(f'{stream_id}_received', 1), 1) * 100,
-            'processing_rate': self.stats_dict.get(f'{stream_id}_processed', 0) / max(self.stats_dict.get(f'{stream_id}_received', 1), 1) * 100,
-            'save_rate': self.stats_dict.get(f'{stream_id}_saved', 0) / max(self.stats_dict.get(f'{stream_id}_processed', 1), 1) * 100
+            'total_frames': received,
+            'loss_rate': lost / max(received, 1) * 100,
+            'processing_rate': processed / max(received, 1) * 100,
+            'save_rate': saved / max(processed, 1) * 100,
+            'move_rate': moved / max(saved, 1) * 100 if hasattr(self.config, 'two_stage_storage') and self.config.two_stage_storage else 0
         }
     
     def reset_statistics(self):

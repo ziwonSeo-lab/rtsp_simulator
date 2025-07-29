@@ -106,6 +106,24 @@ def parse_arguments():
                        default=0.0,
                        help='프레임 손실률 시뮬레이션 (0.0-1.0, 기본값: 0.0)')
     
+    # 2단계 저장 시스템 옵션
+    parser.add_argument('--two-stage-storage', 
+                       action='store_true',
+                       help='2단계 저장 활성화 (SSD → HDD)')
+    
+    parser.add_argument('--ssd-temp-path', 
+                       default='./output/temp',
+                       help='SSD 임시 저장 경로 (기본값: ./output/temp)')
+    
+    parser.add_argument('--hdd-final-path', 
+                       default='/mnt/raid5',
+                       help='HDD 최종 저장 경로 (기본값: /mnt/raid5)')
+    
+    parser.add_argument('--file-move-workers', 
+                       type=int, 
+                       default=2,
+                       help='파일 이동 워커 수 (기본값: 2)')
+    
     return parser.parse_args()
 
 def create_config(args) -> RTSPConfig:
@@ -125,6 +143,12 @@ def create_config(args) -> RTSPConfig:
     config.input_fps = args.fps
     config.blur_enabled = not args.no_blur
     config.frame_loss_rate = args.frame_loss_rate
+    
+    # 2단계 저장 시스템 설정
+    config.two_stage_storage = args.two_stage_storage
+    config.ssd_temp_path = args.ssd_temp_path
+    config.hdd_final_path = args.hdd_final_path
+    config.file_move_workers = args.file_move_workers
     
     if args.duration > 0:
         config.max_duration_seconds = args.duration
@@ -179,8 +203,17 @@ def main():
         
         # 출력 디렉토리 생성
         if args.save:
-            os.makedirs(args.save_path, exist_ok=True)
-            logger.info(f"저장 경로 생성: {args.save_path}")
+            if config.two_stage_storage:
+                # 2단계 저장: SSD와 HDD 경로 모두 생성
+                os.makedirs(config.ssd_temp_path, exist_ok=True)
+                os.makedirs(config.hdd_final_path, exist_ok=True)
+                logger.info(f"2단계 저장 경로 생성:")
+                logger.info(f"  📂 SSD 임시: {config.ssd_temp_path}")
+                logger.info(f"  📁 HDD 최종: {config.hdd_final_path}")
+            else:
+                # 일반 저장
+                os.makedirs(args.save_path, exist_ok=True)
+                logger.info(f"저장 경로 생성: {args.save_path}")
         
         # 프로세서 생성 및 시작
         processor = SharedPoolRTSPProcessor(config)
