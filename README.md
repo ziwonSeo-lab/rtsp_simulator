@@ -5,12 +5,15 @@ git # RTSP 시뮬레이터 v2 🎥
 ## 📋 주요 기능
 
 ### 🎯 핵심 특징
-- **멀티스레드 처리**: 최대 10개의 독립적인 스레드로 여러 RTSP 소스 동시 처리
+- **🆕 모듈화된 구조**: 재사용 가능한 RTSP 클라이언트 모듈
+- **듀얼 실행 모드**: GUI와 헤드리스 모드 모두 지원
+- **멀티프로세스 처리**: 독립된 프로세스로 안정적인 병렬 처리 (18개 프로세스)
 - **스레드별 AI 모델**: 각 스레드마다 독립적인 YOLO/HeadBlurrer 인스턴스로 GPU 경합 해결
 - **실시간 영상 처리**: 얼굴 블러링, 객체 탐지 등 커스텀 모듈 지원
 - **고급 비디오 인코딩**: FFmpeg 기반 다양한 코덱 및 압축 옵션
 - **실시간 모니터링**: CPU, RAM, GPU 사용률 및 성능 프로파일링
 - **직관적 GUI**: 스크롤 가능한 설정 패널과 실시간 미리보기
+- **프레임/패킷 손실 추적**: 상세한 통계 및 오류 분석
 
 ### 🎬 지원 비디오 코덱
 - **H.264 (libx264)**: 범용 호환성
@@ -50,18 +53,35 @@ cd rtsp_simulator
 ### 2. 프로젝트 구조 확인
 ```
 rtsp_simulator/
-├── rtsp_simulator_ffmpeg_v2.py  # 메인 프로그램
-├── media/                       # 입력 비디오 파일 폴더
-│   ├── README.md               # 사용법 안내
-│   └── .gitkeep               # Git 추적용
-├── output/                     # 출력 비디오 파일 폴더  
-│   ├── README.md              # 출력 구조 안내
-│   └── .gitkeep              # Git 추적용
-├── .env.example               # 환경변수 템플릿
-├── README.md                  # 프로젝트 문서
-├── requirements.txt           # Python 패키지 종속성
-├── .gitignore                # Git 무시 파일
-└── .gitmessage.txt          # 커밋 메시지 템플릿
+├── code/
+│   ├── rtsp_gui/                      # 기존 GUI 프로그램들
+│   │   ├── rtsp_simulator_ffmpeg_v2.py  # 원본 메인 프로그램
+│   │   └── multi-process_rtsp.py      # 멀티프로세스 버전
+│   └── rtsp_client_module/            # 🆕 모듈화된 RTSP 클라이언트
+│       ├── __init__.py               # 모듈 초기화
+│       ├── config.py                 # 설정 관리
+│       ├── statistics.py             # 통계 및 모니터링
+│       ├── video_writer.py           # FFmpeg 비디오 라이터
+│       ├── workers.py                # 멀티프로세스 워커들
+│       ├── processor.py              # 메인 프로세서
+│       ├── gui.py                    # GUI 템플릿
+│       ├── run_with_gui.py          # 🚀 GUI 실행파일
+│       ├── run_headless.py          # 🚀 헤드리스 실행파일
+│       └── README.md                # 모듈 사용법
+├── blur_module/                       # 블러 처리 모듈
+│   ├── ipcamera_blur.py              # HeadBlurrer 클래스
+│   └── models/                       # YOLO 모델 파일들
+├── media/                            # 입력 비디오 파일 폴더
+│   ├── README.md                    # 사용법 안내
+│   └── .gitkeep                    # Git 추적용
+├── output/                           # 출력 비디오 파일 폴더  
+│   ├── README.md                   # 출력 구조 안내
+│   └── .gitkeep                   # Git 추적용
+├── .env.example                     # 환경변수 템플릿
+├── README.md                        # 이 문서
+├── requirements.txt                 # Python 패키지 종속성
+├── .gitignore                      # Git 무시 파일
+└── .gitmessage.txt                # 커밋 메시지 템플릿
 ```
 
 ### 3. 환경변수 설정
@@ -110,19 +130,52 @@ sudo apt update
 sudo apt install ffmpeg
 ```
 
-### 5. 실행
-```bash
-python rtsp_simulator_ffmpeg_v2.py
-```
-
 ## 🚀 사용 방법
 
-### 기본 실행
-1. 프로그램 실행 후 GUI 인터페이스 확인
-2. **미디어 파일 준비**: `media/` 폴더에 처리할 비디오 파일 복사
-3. **소스 설정**에서 "파일 선택" 버튼으로 파일 선택 또는 RTSP URL 입력
-4. **저장 설정**에서 출력 경로 확인 (기본: `./output/`)
-5. **시작** 버튼 클릭으로 처리 시작
+### 🆕 모듈화된 RTSP 클라이언트 (권장)
+
+#### GUI 모드 실행
+```bash
+cd code/rtsp_client_module
+python run_with_gui.py
+```
+
+#### 헤드리스 모드 실행
+```bash
+cd code/rtsp_client_module
+
+# 기본 실행 (config.py의 설정 사용)
+python run_headless.py --save
+
+# 사용자 정의 실행
+python run_headless.py --sources rtsp://stream1 rtsp://stream2 --threads 4 --duration 60 --save --save-path ./videos/
+
+# 도움말 확인
+python run_headless.py --help
+```
+
+#### 헤드리스 모드 주요 옵션
+- `--sources`: RTSP 소스 URL들 (여러 개 가능, 기본값: config.py 설정)
+- `--threads`: 스레드 수 (기본값: config.py에서 6개)
+- `--duration`: 실행 시간(초) - 0이면 무한 실행
+- `--save`: 비디오 저장 활성화
+- `--save-path`: 저장 경로 (기본값: ./output/)
+- `--fps`: 입력 FPS (기본값: 15.0)
+- `--log-level`: 로그 레벨 (DEBUG/INFO/WARNING/ERROR)
+- `--frame-loss-rate`: 프레임 손실률 시뮬레이션
+
+### 기존 GUI 프로그램 (레거시)
+```bash
+cd code/rtsp_gui
+python rtsp_simulator_ffmpeg_v2.py  # 원본 GUI 프로그램
+python multi-process_rtsp.py        # 멀티프로세스 버전
+```
+
+### 기본 사용법
+1. **config.py 설정 확인**: `code/rtsp_client_module/config.py`에서 기본 RTSP 소스들과 설정 확인
+2. **GUI 모드**: 직관적인 인터페이스로 설정 변경 가능
+3. **헤드리스 모드**: 서버 환경이나 자동화에 적합
+4. **출력 확인**: `./output/` 폴더에서 처리된 비디오 파일 확인
 
 ### 소스 설정 예시
 ```
@@ -207,23 +260,34 @@ def apply_blur(frame, thread_id):
 
 ### 1. 보안 카메라 모니터링
 ```
-- 다중 RTSP 카메라 동시 모니터링
+- 다중 RTSP 카메라 동시 모니터링 (최대 6개 소스)
 - 실시간 얼굴 블러링으로 프라이버시 보호
 - 고효율 압축으로 저장공간 절약
+- 프레임 손실 및 오류 통계 추적
 ```
 
-### 2. 스트리밍 서비스
+### 2. 서버 환경 자동화
 ```
-- 실시간 영상 처리 및 재전송
-- 다양한 코덱으로 호환성 확보
-- 하드웨어 가속으로 성능 최적화
+- 헤드리스 모드로 GUI 없이 실행
+- 명령행 인자로 유연한 설정 제어
+- 로그 파일 기반 모니터링
+- 시간 제한 및 자동 종료 기능
 ```
 
-### 3. 비디오 분석 시스템
+### 3. 개발 및 테스트 환경
+```
+- 모듈화된 구조로 쉬운 커스터마이징
+- config.py 기반 중앙화된 설정 관리
+- 블러 모듈 동적 로딩
+- 상세한 성능 프로파일링
+```
+
+### 4. 비디오 분석 시스템
 ```
 - AI 모델 통합으로 객체 탐지
-- 대용량 비디오 배치 처리
-- 상세한 성능 모니터링
+- 멀티프로세스 기반 고성능 처리
+- FFmpeg 기반 고품질 인코딩
+- 실시간 통계 및 모니터링
 ```
 
 ## 🚨 문제 해결
@@ -290,6 +354,19 @@ def apply_blur(frame, thread_id):
 
 ---
 
+## 📚 추가 문서
+
+- [RTSP 클라이언트 모듈 사용법](code/rtsp_client_module/README.md)
+- [블러 모듈 설정 가이드](blur_module/README.md)
+- [환경변수 설정 예시](.env.example)
+
+---
+
 **개발자**: RTSP Simulator Team  
-**버전**: v2.0  
+**버전**: v2.1 - 모듈화 버전  
 **최종 업데이트**: 2025년 1월
+
+### 🔄 버전 히스토리
+- **v2.1**: RTSP 클라이언트 모듈화, GUI/헤드리스 듀얼 모드, 멀티프로세스 개선
+- **v2.0**: FFmpeg 통합, 멀티스레드 처리, GUI 개선
+- **v1.x**: 초기 RTSP 스트림 처리 구현
