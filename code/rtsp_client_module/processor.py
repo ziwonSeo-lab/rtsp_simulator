@@ -12,7 +12,8 @@ import os
 import time
 import logging
 from multiprocessing import Manager, Queue, Process, Event
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+import queue
 
 # 로컬 모듈 임포트
 from .config import RTSPConfig
@@ -276,6 +277,53 @@ class SharedPoolRTSPProcessor:
         }
         
         return stats
+    
+    def get_preview_frame(self) -> Optional[Any]:
+        """
+        미리보기용 프레임 가져오기
+        
+        Returns:
+            Optional[Any]: 미리보기 프레임 (없으면 None)
+        """
+        try:
+            if hasattr(self.config, 'preview_enabled') and not self.config.preview_enabled:
+                return None
+                
+            # 미리보기 큐에서 최신 프레임 가져오기 (논블로킹)
+            frame_data = self.preview_queue.get_nowait()
+            
+            # 큐에 쌓인 오래된 프레임들 제거 (최신 프레임만 유지)
+            while not self.preview_queue.empty():
+                try:
+                    newer_frame_data = self.preview_queue.get_nowait()
+                    frame_data = newer_frame_data  # 더 새로운 프레임으로 교체
+                except queue.Empty:
+                    break
+            
+            # 프레임은 (stream_id, frame, info) 튜플 형태로 전송됨
+            if isinstance(frame_data, tuple) and len(frame_data) >= 2:
+                return frame_data[1]  # 실제 프레임 데이터 반환
+            else:
+                return frame_data  # 단일 프레임인 경우
+            
+        except queue.Empty:
+            # 큐가 비어있음 - 정상적인 상황
+            return None
+        except Exception as e:
+            logger.debug(f"미리보기 프레임 가져오기 실패: {e}")
+            return None
+    
+    def get_preview_queue_size(self) -> int:
+        """
+        미리보기 큐 크기 반환
+        
+        Returns:
+            int: 현재 미리보기 큐에 있는 프레임 수
+        """
+        try:
+            return self.preview_queue.qsize()
+        except:
+            return 0
     
     def get_thread_statistics(self, thread_id: int) -> Dict[str, Any]:
         """

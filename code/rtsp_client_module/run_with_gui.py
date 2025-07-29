@@ -14,6 +14,8 @@ import queue
 import time
 from datetime import datetime
 from typing import Optional
+import cv2
+import numpy as np
 
 # 현재 디렉토리를 Python path에 추가
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -42,13 +44,19 @@ class RTSPProcessorGUI:
     
     def __init__(self, root):
         self.root = root
-        self.root.title("RTSP 시뮬레이터 - GUI 모드")
-        self.root.geometry("1000x700")
+        self.root.title("RTSP 시뮬레이터 - GUI 모드 (미리보기 지원)")
+        self.root.geometry("1200x800")
         
         self.processor = None
         self.config = None
         self.running = False
         self.update_thread = None
+        
+        # 미리보기 관련 변수
+        self.preview_enabled = True
+        self.preview_frame_queue = queue.Queue(maxsize=10)
+        self.preview_thread = None
+        self.current_preview_image = None
         
         # config.py의 기본값 로드
         default_config = RTSPConfig()
@@ -71,11 +79,35 @@ class RTSPProcessorGUI:
         # 제목
         title_label = ttk.Label(main_frame, text="RTSP 프로세서 - GUI 모드", 
                                font=("Arial", 16, "bold"))
-        title_label.pack(pady=(0, 20))
+        title_label.pack(pady=(0, 10))
         
-        # 설정 프레임
-        config_frame = ttk.LabelFrame(main_frame, text="설정", padding="10")
-        config_frame.pack(fill=tk.X, pady=(0, 10))
+        # 상단 컨테이너 (설정 + 미리보기)
+        top_container = ttk.Frame(main_frame)
+        top_container.pack(fill=tk.X, pady=(0, 10))
+        
+        # 설정 프레임 (왼쪽)
+        config_frame = ttk.LabelFrame(top_container, text="설정", padding="10")
+        config_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        
+        # 미리보기 프레임 (오른쪽)
+        preview_frame = ttk.LabelFrame(top_container, text="실시간 미리보기", padding="10")
+        preview_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 0))
+        
+        # 미리보기 캔버스
+        self.preview_canvas = tk.Canvas(preview_frame, width=320, height=240, bg="black")
+        self.preview_canvas.pack(padx=5, pady=5)
+        
+        # 미리보기 정보 라벨
+        self.preview_info_label = ttk.Label(preview_frame, text="미리보기: 대기 중", 
+                                          font=("Arial", 9))
+        self.preview_info_label.pack(pady=(5, 0))
+        
+        # 미리보기 활성화 체크박스
+        self.preview_var = tk.BooleanVar(value=self.preview_enabled)
+        preview_check = ttk.Checkbutton(preview_frame, text="미리보기 활성화", 
+                                      variable=self.preview_var,
+                                      command=self.toggle_preview)
+        preview_check.pack(pady=(5, 0))
         
         # RTSP 소스 설정
         source_frame = ttk.Frame(config_frame)
@@ -181,6 +213,120 @@ class RTSPProcessorGUI:
             self.save_path_entry.delete(0, tk.END)
             self.save_path_entry.insert(0, path)
     
+    def toggle_preview(self):
+        """미리보기 활성화/비활성화 토글"""
+        self.preview_enabled = self.preview_var.get()
+        if not self.preview_enabled:
+            # 미리보기 비활성화 시 캔버스 클리어
+            self.preview_canvas.delete("all")
+            self.preview_info_label.config(text="미리보기: 비활성화")
+            self.current_preview_image = None
+        else:
+            self.preview_info_label.config(text="미리보기: 대기 중")
+    
+    def update_preview_frame(self, frame):
+        """미리보기 프레임 업데이트"""
+        if not self.preview_enabled or frame is None:
+            return
+        
+        try:
+            # 프레임을 큐에 추가 (최신 프레임만 유지)
+            if not self.preview_frame_queue.full():
+                self.preview_frame_queue.put(frame, block=False)
+            else:
+                # 큐가 가득 찬 경우 오래된 프레임 제거 후 새 프레임 추가
+                try:
+                    self.preview_frame_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    self.preview_frame_queue.put(frame, block=False)
+                except queue.Full:
+                    pass
+        except Exception as e:
+            logger.error(f"미리보기 프레임 업데이트 오류: {e}")
+    
+    def process_preview_frames(self):
+        """미리보기 프레임 처리 스레드"""
+        while self.running and self.preview_enabled:
+            try:
+                # 큐에서 프레임 가져오기 (타임아웃 1초)
+                frame = self.preview_frame_queue.get(timeout=1.0)
+                
+                if frame is not None:
+                    # OpenCV 프레임을 PIL Image로 변환
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    
+                    # 미리보기 크기에 맞게 리사이즈
+                    canvas_width = self.preview_canvas.winfo_width()
+                    canvas_height = self.preview_canvas.winfo_height()
+                    
+                    if canvas_width > 1 and canvas_height > 1:  # 캔버스가 초기화된 경우
+                        frame_resized = cv2.resize(frame_rgb, (canvas_width, canvas_height))
+                        
+                        # PIL Image로 변환
+                        pil_image = Image.fromarray(frame_resized)
+                        tk_image = ImageTk.PhotoImage(pil_image)
+                        
+                        # GUI 스레드에서 캔버스 업데이트
+                        self.root.after(0, self._update_canvas, tk_image)
+                        
+                        # 현재 시간 업데이트
+                        current_time = datetime.now().strftime("%H:%M:%S")
+                        self.root.after(0, lambda: self.preview_info_label.config(
+                            text=f"미리보기: {current_time}"
+                        ))
+                
+            except queue.Empty:
+                # 타임아웃 - 정상적인 상황
+                continue
+            except Exception as e:
+                logger.error(f"미리보기 처리 오류: {e}")
+                time.sleep(0.1)
+    
+    def _update_canvas(self, tk_image):
+        """GUI 스레드에서 캔버스 업데이트"""
+        try:
+            self.preview_canvas.delete("all")
+            self.preview_canvas.create_image(
+                self.preview_canvas.winfo_width() // 2,
+                self.preview_canvas.winfo_height() // 2,
+                image=tk_image
+            )
+            # 이미지 참조 유지 (가비지 컬렉션 방지)
+            self.current_preview_image = tk_image
+        except Exception as e:
+            logger.error(f"캔버스 업데이트 오류: {e}")
+    
+    def start_preview_thread(self):
+        """미리보기 스레드 시작"""
+        if self.preview_enabled and (self.preview_thread is None or not self.preview_thread.is_alive()):
+            self.preview_thread = threading.Thread(target=self.process_preview_frames, daemon=True)
+            self.preview_thread.start()
+            logger.info("미리보기 스레드 시작됨")
+    
+    def stop_preview_thread(self):
+        """미리보기 스레드 중지"""
+        self.preview_enabled = False
+        if self.preview_thread and self.preview_thread.is_alive():
+            try:
+                self.preview_thread.join(timeout=2.0)
+            except:
+                pass
+        
+        # 큐 비우기
+        while not self.preview_frame_queue.empty():
+            try:
+                self.preview_frame_queue.get_nowait()
+            except queue.Empty:
+                break
+        
+        # 캔버스 클리어
+        self.preview_canvas.delete("all")
+        self.preview_info_label.config(text="미리보기: 중지됨")
+        self.current_preview_image = None
+        logger.info("미리보기 스레드 중지됨")
+    
     def start_processing(self):
         """처리 시작"""
         try:
@@ -206,6 +352,9 @@ class RTSPProcessorGUI:
             self.config.save_enabled = save_enabled
             self.config.save_path = save_path
             
+            # 미리보기 설정
+            self.config.preview_enabled = self.preview_enabled
+            
             # 프로세서 생성 및 시작
             self.processor = SharedPoolRTSPProcessor(self.config)
             self.processor.start()
@@ -217,6 +366,10 @@ class RTSPProcessorGUI:
             
             logger.info("RTSP 처리 시작됨")
             
+            # 미리보기 스레드 시작
+            if self.preview_enabled:
+                self.start_preview_thread()
+            
             # 상태 업데이트 스레드 시작
             self.start_update_thread()
             
@@ -227,11 +380,15 @@ class RTSPProcessorGUI:
     def stop_processing(self):
         """처리 중지"""
         try:
+            self.running = False
+            
+            # 미리보기 스레드 중지
+            self.stop_preview_thread()
+            
             if self.processor:
                 self.processor.stop()
                 self.processor = None
             
-            self.running = False
             self.start_button.config(state=tk.NORMAL)
             self.stop_button.config(state=tk.DISABLED)
             self.status_label.config(text="중지됨", foreground="red")
@@ -255,9 +412,18 @@ class RTSPProcessorGUI:
         while self.running:
             try:
                 if self.processor:
-                    # 여기에 상태 정보 업데이트 로직 추가 가능
+                    # 미리보기 프레임 가져오기 시도
+                    if self.preview_enabled and hasattr(self.processor, 'get_preview_frame'):
+                        try:
+                            preview_frame = self.processor.get_preview_frame()
+                            if preview_frame is not None:
+                                self.update_preview_frame(preview_frame)
+                        except Exception as e:
+                            logger.debug(f"미리보기 프레임 가져오기 실패: {e}")
+                    
+                    # 여기에 다른 상태 정보 업데이트 로직 추가 가능
                     pass
-                time.sleep(1)
+                time.sleep(0.1)  # 미리보기를 위해 더 빠른 업데이트
             except Exception as e:
                 logger.error(f"상태 업데이트 오류: {e}")
                 break
@@ -273,6 +439,9 @@ class RTSPProcessorGUI:
             if not result:
                 return
             self.stop_processing()
+        
+        # 미리보기 스레드 완전 정리
+        self.stop_preview_thread()
         
         self.root.destroy()
 
