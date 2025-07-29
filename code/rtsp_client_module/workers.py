@@ -371,7 +371,6 @@ def rtsp_capture_process(source, stream_id, thread_id, blur_queue, preview_queue
                 'frame': frame.copy(),  # 필요한 경우에만 복사
                 'timestamp': datetime.now(),
                 'frame_number': frame_count,
-                'blur_module': blur_module,
                 'config': config,
                 'should_blur': should_blur  # 블러 처리 여부 플래그 추가
             }
@@ -423,6 +422,9 @@ def blur_worker_process(worker_id, blur_queue, save_queue, preview_queue, stats_
     processed_frame = None
     work_item = None
     
+    # blur_module을 각 워커에서 독립적으로 로드 (캐시용)
+    blur_modules_cache = {}
+    
     try:
         while not stop_event.is_set() or not blur_queue.empty():
             try:
@@ -444,9 +446,29 @@ def blur_worker_process(worker_id, blur_queue, save_queue, preview_queue, stats_
                 
                 frame = work_item['frame']
                 config = work_item['config']
-                blur_module = work_item.get('blur_module')  # 선택적 키
                 stream_id = work_item['stream_id']
                 thread_id = work_item['thread_id']
+                
+                # blur_module을 워커에서 독립적으로 로드 (캐시 활용)
+                blur_module = None
+                if config.blur_module_path and config.blur_module_path not in blur_modules_cache:
+                    try:
+                        import importlib.util
+                        spec = importlib.util.spec_from_file_location(f"blur_module_worker_{worker_id}", config.blur_module_path)
+                        blur_module = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(blur_module)
+                        
+                        if hasattr(blur_module, 'HeadBlurrer'):
+                            head_blurrer = blur_module.HeadBlurrer()
+                            blur_module.apply_blur = lambda frame: head_blurrer.process_frame(frame)
+                        
+                        blur_modules_cache[config.blur_module_path] = blur_module
+                        logger.info(f"Worker {worker_id}: 블러 모듈 로드 성공")
+                    except Exception as e:
+                        logger.error(f"Worker {worker_id}: 블러 모듈 로드 실패 - {e}")
+                        blur_modules_cache[config.blur_module_path] = None
+                elif config.blur_module_path in blur_modules_cache:
+                    blur_module = blur_modules_cache[config.blur_module_path]
                 
                 # 성능 프로파일링 시작
                 if not config.high_performance_mode:

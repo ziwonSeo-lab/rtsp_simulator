@@ -30,7 +30,7 @@ class HeadBlurrer:
             else:
                 # .env 파일이 없거나 경로가 잘못된 경우 기본 상대경로 사용
                 current_dir = os.path.dirname(os.path.abspath(__file__))
-                model_path = os.path.join(current_dir, "models", "best_re_final.pt")
+                model_path = os.path.join(current_dir, "models", "best_re_final.engine")
         
         self.model_path = model_path
         self.conf_threshold = conf_threshold  # 탐지 신뢰도 임계값
@@ -302,7 +302,7 @@ def main():
     if not model_path or not os.path.exists(model_path):
         # 기본 상대경로 사용
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        model_path = os.path.join(current_dir, "models", "best_re_final.pt")
+        model_path = os.path.join(current_dir, "models", "best_re_final.engine")
     confidence_threshold = args.confidence
     rtsp_url = 'rtsp://root:root@192.168.1.101:554/cam0_0'  # 단일 카메라
     
@@ -452,7 +452,7 @@ _env_model_path = os.getenv('HEAD_BLUR_MODEL_PATH')
 if not _env_model_path or not os.path.exists(_env_model_path):
     # 기본 상대경로 사용
     _current_dir = os.path.dirname(os.path.abspath(__file__))
-    _env_model_path = os.path.join(_current_dir, "models", "best_re_final.pt")
+    _env_model_path = os.path.join(_current_dir, "models", "best_re_final.engine")
 
 _blurrer = HeadBlurrer(
     model_path=_env_model_path, 
