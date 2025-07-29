@@ -275,7 +275,7 @@ class SharedPoolRTSPProcessor:
             'save_queue_size': self.save_queue.qsize(),
             'connection_status': connection_status,
             'resource_stats': self.resource_monitor.get_current_stats(),
-            'performance_stats': self.performance_profiler.get_profile_stats()
+            'performance_stats': self.performance_profiler.get_all_profiles()
         }
         
         return stats
