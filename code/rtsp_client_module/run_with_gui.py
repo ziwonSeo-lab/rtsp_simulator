@@ -69,9 +69,9 @@ class RTSPProcessorGUI:
         self.save_enabled = default_config.save_enabled
         self.save_path = default_config.save_path
         
+        self.setup_statistics_variables()  # UI 설정 전에 변수들 초기화
         self.setup_ui()
         self.setup_logging_handler()
-        self.setup_statistics_variables()
     
     def setup_ui(self):
         """UI 설정"""
