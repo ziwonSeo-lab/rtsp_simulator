@@ -597,6 +597,11 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
     video_frame_counts = {}
     stream_dirs = {}
     
+    # 15fps 제한을 위한 타이머 (스트림별)
+    last_save_time = {}  # 각 스트림별 마지막 저장 시간
+    target_fps = 15.0
+    frame_interval = 1.0 / target_fps  # 66.7ms 간격
+    
     def _check_ffmpeg():
         try:
             result = subprocess.run(['ffmpeg', '-version'], 
@@ -630,8 +635,20 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
                     frame_counts[stream_id] = 0
                     file_counters[stream_id] = 0
                     video_frame_counts[stream_id] = 0
+                    last_save_time[stream_id] = 0  # 첫 프레임은 바로 저장
                 
                 frame_counts[stream_id] += 1
+                
+                # 15fps 제한 체크 (66.7ms 간격)
+                current_time = time.time()
+                time_since_last_save = current_time - last_save_time[stream_id]
+                
+                if time_since_last_save < frame_interval:
+                    # 아직 15fps 간격이 지나지 않았으므로 프레임 스킵
+                    continue
+                
+                # 15fps 간격이 지났으므로 저장 진행
+                last_save_time[stream_id] = current_time
                 
                 # 영상으로만 저장 (container_format이 비디오 포맷인 경우)
                 if config.container_format in ['mp4', 'mkv', 'webm', 'avi']:
