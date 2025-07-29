@@ -18,7 +18,7 @@ import queue
 # 로컬 모듈 임포트
 from .config import RTSPConfig
 from .statistics import FrameCounter, ResourceMonitor, PerformanceProfiler
-from .workers import rtsp_capture_process, blur_worker_process, save_worker_process, file_move_worker_process
+from .workers import rtsp_capture_process, blur_worker_process, save_worker_process, file_move_worker_process, file_monitor_worker_process
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,7 @@ class SharedPoolRTSPProcessor:
         self.blur_processes = []
         self.save_processes = []
         self.file_move_processes = []
+        self.file_monitor_processes = []
         
         self.running = False
         
@@ -185,18 +186,30 @@ class SharedPoolRTSPProcessor:
                 proc = Process(
                     target=save_worker_process,
                     args=(i+1, self.save_queue, self.stats_dict, 
-                          self.stop_event, self.config.save_path, 
-                          self.file_move_queue, self.config),
+                          self.stop_event, self.config.save_path, self.config),
                     name=f"SaveWorker_{i+1}"
                 )
                 proc.start()
                 self.save_processes.append(proc)
                 logger.info(f"💾 저장 워커 시작: Worker {i+1} (PID: {proc.pid})")
         
-        # 파일 이동 워커들 시작 (2단계 저장 활성화 시)
+        # 2단계 저장 워커들 시작 (파일 모니터 + 파일 이동)
         if (hasattr(self.config, 'two_stage_storage') and self.config.two_stage_storage and 
             self.file_move_queue is not None):
             logger.info("-" * 40)
+            
+            # 파일 모니터 워커 시작 (1개만 필요)
+            monitor_proc = Process(
+                target=file_monitor_worker_process,
+                args=(self.file_move_queue, self.stats_dict, self.stop_event, 
+                      self.config.ssd_temp_path, self.config.temp_file_prefix),
+                name="FileMonitorWorker"
+            )
+            monitor_proc.start()
+            self.file_monitor_processes.append(monitor_proc)
+            logger.info(f"👁️ 파일 모니터 워커 시작: (PID: {monitor_proc.pid})")
+            
+            # 파일 이동 워커들 시작
             for i in range(getattr(self.config, 'file_move_workers', 2)):
                 proc = Process(
                     target=file_move_worker_process,
@@ -210,12 +223,14 @@ class SharedPoolRTSPProcessor:
                 logger.info(f"🚛 파일 이동 워커 시작: Worker {i+1} (PID: {proc.pid})")
         
         total = (len(self.capture_processes) + len(self.blur_processes) + 
-                len(self.save_processes) + len(self.file_move_processes))
+                len(self.save_processes) + len(self.file_move_processes) + 
+                len(self.file_monitor_processes))
         logger.info("=" * 60)
         logger.info(f"✅ 총 {total}개 프로세스 시작 완료")
         logger.info(f"   📹 캡처: {len(self.capture_processes)}개")
         logger.info(f"   🔍 블러: {len(self.blur_processes)}개")
         logger.info(f"   💾 저장: {len(self.save_processes)}개")
+        logger.info(f"   👁️ 모니터: {len(self.file_monitor_processes)}개")
         logger.info(f"   🚛 이동: {len(self.file_move_processes)}개")
         logger.info("=" * 60)
     
@@ -238,6 +253,7 @@ class SharedPoolRTSPProcessor:
             ("캡처", self.capture_processes, 5),
             ("블러", self.blur_processes, 10),
             ("저장", self.save_processes, 20),
+            ("파일모니터", self.file_monitor_processes, 5),
             ("파일이동", self.file_move_processes, 15)
         ]
         

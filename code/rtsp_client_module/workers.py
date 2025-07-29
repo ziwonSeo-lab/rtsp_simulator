@@ -603,7 +603,7 @@ def blur_worker_process(worker_id, blur_queue, save_queue, preview_queue, stats_
         logger.info(f"블러 워커 종료 - Worker {worker_id}, 처리: {processed_count}")
 
 
-def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_output_dir, file_move_queue=None, config=None):
+def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_output_dir, config=None):
     """저장 워커 (2단계 저장 지원)"""
     logger = logging.getLogger(f"SAVE_WORKER_{worker_id}")
     current_pid = os.getpid()
@@ -705,35 +705,16 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
                                 logger.info(f"Stream {stream_id}: 비디오 저장 완료 - {video_frame_counts[stream_id]}프레임 "
                                           f"(part{file_counters[stream_id]:03d})")
                                 
-                                # 2단계 저장: 임시 파일명에서 접두사 제거 후 파일 이동 큐에 추가
-                                if two_stage_enabled and current_filepath and current_base_filename and file_move_queue:
+                                # 2단계 저장: 임시 파일명에서 접두사 제거 (파일 모니터가 자동 감지)
+                                if two_stage_enabled and current_filepath and current_base_filename:
                                     # 임시 파일에서 접두사 제거
                                     final_temp_filepath = current_filepath.replace(temp_prefix, "", 1)
                                     
                                     try:
-                                        # 파일명에서 접두사 제거 (이름 변경)
+                                        # 파일명에서 접두사 제거 (이름 변경) - 모니터가 이 이벤트를 감지함
                                         if os.path.exists(current_filepath):
                                             os.rename(current_filepath, final_temp_filepath)
-                                            logger.info(f"Stream {stream_id}: 임시 파일 이름 변경 완료 - {os.path.basename(final_temp_filepath)}")
-                                            
-                                            # 파일 이동 큐에 추가
-                                            move_item = {
-                                                'temp_filepath': final_temp_filepath,
-                                                'final_filename': current_base_filename,
-                                                'stream_id': stream_id
-                                            }
-                                            
-                                            try:
-                                                file_move_queue.put_nowait(move_item)
-                                                logger.info(f"Stream {stream_id}: 파일 이동 대기열에 추가됨 - {current_base_filename}")
-                                            except queue.Full:
-                                                logger.warning(f"Stream {stream_id}: 파일 이동 큐가 가득참 - {current_base_filename}")
-                                                # 큐가 가득 찬 경우 기존 항목 제거 후 재시도
-                                                try:
-                                                    file_move_queue.get_nowait()
-                                                    file_move_queue.put_nowait(move_item)
-                                                except:
-                                                    pass
+                                            logger.info(f"Stream {stream_id}: 임시 파일 이름 변경 완료 - {os.path.basename(final_temp_filepath)} (모니터가 감지 예정)")
                                         else:
                                             logger.warning(f"Stream {stream_id}: 임시 파일을 찾을 수 없음 - {current_filepath}")
                                     
@@ -946,27 +927,14 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
                 writer.release()
                 logger.info(f"Stream {stream_id}: 최종 비디오 저장 완료 - {video_frame_counts.get(stream_id, 0)}프레임")
                 
-                # 2단계 저장: 종료 시에도 남은 파일 처리
-                if two_stage_enabled and current_filepath and current_base_filename and file_move_queue:
+                # 2단계 저장: 종료 시에도 남은 파일 처리 (파일 모니터가 자동 감지)
+                if two_stage_enabled and current_filepath and current_base_filename:
                     final_temp_filepath = current_filepath.replace(temp_prefix, "", 1)
                     
                     try:
                         if os.path.exists(current_filepath):
                             os.rename(current_filepath, final_temp_filepath)
-                            logger.info(f"Stream {stream_id}: 종료 시 임시 파일 이름 변경 완료 - {os.path.basename(final_temp_filepath)}")
-                            
-                            # 파일 이동 큐에 추가
-                            move_item = {
-                                'temp_filepath': final_temp_filepath,
-                                'final_filename': current_base_filename,
-                                'stream_id': stream_id
-                            }
-                            
-                            try:
-                                file_move_queue.put_nowait(move_item)
-                                logger.info(f"Stream {stream_id}: 종료 시 파일 이동 대기열에 추가됨 - {current_base_filename}")
-                            except queue.Full:
-                                logger.warning(f"Stream {stream_id}: 종료 시 파일 이동 큐가 가득참 - {current_base_filename}")
+                            logger.info(f"Stream {stream_id}: 종료 시 임시 파일 이름 변경 완료 - {os.path.basename(final_temp_filepath)} (모니터가 감지 예정)")
                     
                     except Exception as rename_error:
                         logger.error(f"Stream {stream_id}: 종료 시 임시 파일 이름 변경 실패 - {rename_error}")
@@ -1054,3 +1022,222 @@ def file_move_worker_process(worker_id, file_move_queue, stats_dict, stop_event,
         logger.error(f"파일 이동 워커 오류: {e}")
     finally:
         logger.info(f"파일 이동 워커 종료 - Worker {worker_id}, 이동: {moved_count}")
+
+
+def file_monitor_worker_process(file_move_queue, stats_dict, stop_event, ssd_path, temp_prefix):
+    """파일 시스템 모니터 워커 (inotify 기반)"""
+    logger = logging.getLogger("FILE_MONITOR_WORKER")
+    current_pid = os.getpid()
+    logger.info(f"👁️ 파일 모니터 워커 실행 중 - PID: {current_pid}")
+    logger.info(f"   🆔 프로세스 ID: {current_pid}")
+    logger.info(f"   📂 모니터링 경로: {ssd_path}")
+    logger.info(f"   🏷️ 임시 파일 접두사: {temp_prefix}")
+    
+    detected_count = 0
+    
+    try:
+        # inotify 사용 가능 확인
+        try:
+            import inotify_simple
+            from inotify_simple import INotify, flags
+            logger.info("✅ inotify_simple 모듈 사용")
+        except ImportError:
+            # watchdog 라이브러리 사용 (fallback)
+            try:
+                from watchdog.observers import Observer
+                from watchdog.events import FileSystemEventHandler
+                logger.info("✅ watchdog 모듈 사용 (fallback)")
+                use_watchdog = True
+            except ImportError:
+                logger.error("❌ inotify_simple과 watchdog 모듈을 모두 찾을 수 없습니다.")
+                logger.error("다음 명령으로 설치하세요: pip install inotify_simple 또는 pip install watchdog")
+                return
+        else:
+            use_watchdog = False
+        
+        # SSD 경로 생성
+        os.makedirs(ssd_path, exist_ok=True)
+        
+        if use_watchdog:
+            # watchdog 기반 모니터링
+            class FileEventHandler(FileSystemEventHandler):
+                def __init__(self, monitor_worker):
+                    self.monitor_worker = monitor_worker
+                
+                def on_moved(self, event):
+                    # 파일 이름 변경 이벤트 (t_ 접두사 제거)
+                    if not event.is_directory:
+                        self.monitor_worker.handle_file_event(event.dest_path, "MOVED_TO")
+                
+                def on_created(self, event):
+                    # 새 파일 생성 이벤트
+                    if not event.is_directory:
+                        self.monitor_worker.handle_file_event(event.src_path, "CREATE")
+            
+            # 모니터 워커 클래스
+            class WatchdogMonitor:
+                def __init__(self):
+                    self.detected_count = 0
+                
+                def handle_file_event(self, filepath, event_type):
+                    nonlocal detected_count, file_move_queue, stats_dict, logger, temp_prefix
+                    
+                    try:
+                        filename = os.path.basename(filepath)
+                        
+                        # 't_' 접두사가 없는 비디오 파일인지 확인
+                        if (not filename.startswith(temp_prefix) and 
+                            filename.lower().endswith(('.mp4', '.mkv', '.avi', '.webm'))):
+                            
+                            # 스트림 ID 추출
+                            try:
+                                stream_id = filename.split('_')[0]
+                                if not stream_id.startswith('stream'):
+                                    return
+                            except:
+                                return
+                            
+                            # 파일이 실제로 존재하고 접근 가능한지 확인
+                            if os.path.exists(filepath) and os.access(filepath, os.R_OK):
+                                # 약간의 대기 (파일 쓰기 완료 확인)
+                                time.sleep(0.5)
+                                
+                                if os.path.exists(filepath):
+                                    move_item = {
+                                        'temp_filepath': filepath,
+                                        'final_filename': filename,
+                                        'stream_id': stream_id
+                                    }
+                                    
+                                    try:
+                                        file_move_queue.put_nowait(move_item)
+                                        detected_count += 1
+                                        logger.info(f"📁 파일 감지됨: {filename} (총 {detected_count}개)")
+                                        
+                                        if detected_count % 10 == 0:
+                                            logger.info(f"👁️ 모니터: {detected_count}개 파일 감지, 이동큐: {file_move_queue.qsize()}")
+                                        
+                                    except queue.Full:
+                                        logger.warning(f"👁️ 파일 이동 큐가 가득참 - {filename}")
+                                        try:
+                                            file_move_queue.get_nowait()
+                                            file_move_queue.put_nowait(move_item)
+                                        except:
+                                            pass
+                    
+                    except Exception as e:
+                        logger.error(f"👁️ 파일 이벤트 처리 오류: {e}")
+            
+            # watchdog 모니터링 시작
+            monitor = WatchdogMonitor()
+            event_handler = FileEventHandler(monitor)
+            observer = Observer()
+            observer.schedule(event_handler, ssd_path, recursive=True)
+            observer.start()
+            
+            logger.info("👁️ watchdog 파일 모니터링 시작됨")
+            
+            try:
+                while not stop_event.is_set():
+                    time.sleep(1)
+            finally:
+                observer.stop()
+                observer.join()
+        
+        else:
+            # inotify 기반 모니터링
+            inotify = INotify()
+            
+            # 모든 하위 디렉토리 감시 추가
+            watch_descriptors = {}
+            
+            def add_watch_recursive(path):
+                try:
+                    wd = inotify.add_watch(path, flags.MOVED_TO | flags.CREATE | flags.CLOSE_WRITE)
+                    watch_descriptors[wd] = path
+                    logger.info(f"👁️ 감시 추가: {path}")
+                    
+                    # 하위 디렉토리도 재귀적으로 추가
+                    for item in os.listdir(path):
+                        item_path = os.path.join(path, item)
+                        if os.path.isdir(item_path):
+                            add_watch_recursive(item_path)
+                except Exception as e:
+                    logger.warning(f"👁️ 감시 추가 실패: {path} - {e}")
+            
+            add_watch_recursive(ssd_path)
+            
+            logger.info("👁️ inotify 파일 모니터링 시작됨")
+            
+            while not stop_event.is_set():
+                try:
+                    # 1초 타임아웃으로 이벤트 읽기
+                    events = inotify.read(timeout=1000)
+                    
+                    for event in events:
+                        try:
+                            if event.mask & (flags.MOVED_TO | flags.CREATE | flags.CLOSE_WRITE):
+                                if event.name:
+                                    filepath = os.path.join(watch_descriptors.get(event.wd, ssd_path), event.name)
+                                    filename = event.name
+                                    
+                                    # 't_' 접두사가 없는 비디오 파일인지 확인
+                                    if (not filename.startswith(temp_prefix) and 
+                                        filename.lower().endswith(('.mp4', '.mkv', '.avi', '.webm'))):
+                                        
+                                        # 스트림 ID 추출
+                                        try:
+                                            stream_id = filename.split('_')[0]
+                                            if not stream_id.startswith('stream'):
+                                                continue
+                                        except:
+                                            continue
+                                        
+                                        # 파일이 실제로 존재하고 접근 가능한지 확인
+                                        if os.path.exists(filepath) and os.access(filepath, os.R_OK):
+                                            # 약간의 대기 (파일 쓰기 완료 확인)
+                                            time.sleep(0.1)
+                                            
+                                            if os.path.exists(filepath):
+                                                move_item = {
+                                                    'temp_filepath': filepath,
+                                                    'final_filename': filename,
+                                                    'stream_id': stream_id
+                                                }
+                                                
+                                                try:
+                                                    file_move_queue.put_nowait(move_item)
+                                                    detected_count += 1
+                                                    logger.info(f"📁 파일 감지됨: {filename} (총 {detected_count}개)")
+                                                    
+                                                    if detected_count % 10 == 0:
+                                                        logger.info(f"👁️ 모니터: {detected_count}개 파일 감지, 이동큐: {file_move_queue.qsize()}")
+                                                    
+                                                except queue.Full:
+                                                    logger.warning(f"👁️ 파일 이동 큐가 가득참 - {filename}")
+                                                    try:
+                                                        file_move_queue.get_nowait()
+                                                        file_move_queue.put_nowait(move_item)
+                                                    except:
+                                                        pass
+                        
+                        except Exception as e:
+                            logger.error(f"👁️ 이벤트 처리 오류: {e}")
+                
+                except Exception as e:
+                    if "timeout" not in str(e).lower():
+                        logger.error(f"👁️ inotify 읽기 오류: {e}")
+                    continue
+            
+            # 정리
+            for wd in watch_descriptors:
+                try:
+                    inotify.rm_watch(wd)
+                except:
+                    pass
+            inotify.close()
+                
+    except Exception as e:
+        logger.error(f"파일 모니터 워커 오류: {e}")
+    finally:
+        logger.info(f"파일 모니터 워커 종료 - 감지: {detected_count}")
