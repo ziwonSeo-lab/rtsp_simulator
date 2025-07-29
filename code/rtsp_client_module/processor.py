@@ -271,6 +271,8 @@ class SharedPoolRTSPProcessor:
             'thread_count': self.config.thread_count,
             'queue_size': 0,
             'preview_queue_sizes': {0: self.preview_queue.qsize()},
+            'blur_queue_size': self.blur_queue.qsize(),
+            'save_queue_size': self.save_queue.qsize(),
             'connection_status': connection_status,
             'resource_stats': self.resource_monitor.get_current_stats(),
             'performance_stats': self.performance_profiler.get_profile_stats()

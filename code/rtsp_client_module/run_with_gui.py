@@ -69,6 +69,7 @@ class RTSPProcessorGUI:
         
         self.setup_ui()
         self.setup_logging_handler()
+        self.setup_statistics_variables()
     
     def setup_ui(self):
         """UI 설정"""
@@ -165,6 +166,12 @@ class RTSPProcessorGUI:
         self.status_label = ttk.Label(button_frame, text="대기 중", foreground="blue")
         self.status_label.pack(side=tk.LEFT, padx=(20, 0))
         
+        # 통계 정보 프레임
+        stats_frame = ttk.LabelFrame(main_frame, text="실시간 통계", padding="10")
+        stats_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.setup_statistics_panel(stats_frame)
+        
         # 로그 프레임
         log_frame = ttk.LabelFrame(main_frame, text="로그", padding="10")
         log_frame.pack(fill=tk.BOTH, expand=True)
@@ -185,6 +192,93 @@ class RTSPProcessorGUI:
         # 로그 클리어 버튼
         clear_btn = ttk.Button(log_frame, text="로그 지우기", command=self.clear_log)
         clear_btn.pack(pady=(5, 0))
+    
+    def setup_statistics_variables(self):
+        """통계 관련 변수 초기화"""
+        # 통계 업데이트 스레드
+        self.stats_update_thread = None
+        self.stats_update_interval = 1.0  # 1초마다 업데이트
+        
+        # 통계 데이터 저장
+        self.last_stats = {}
+    
+    def setup_statistics_panel(self, parent_frame):
+        """통계 정보 패널 설정"""
+        # 통계 컨테이너를 3개 열로 분할
+        stats_container = ttk.Frame(parent_frame)
+        stats_container.pack(fill=tk.X, expand=True)
+        
+        # 왼쪽: 프레임 통계
+        frame_stats_frame = ttk.LabelFrame(stats_container, text="프레임 통계", padding="5")
+        frame_stats_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        
+        # 수신 프레임
+        ttk.Label(frame_stats_frame, text="수신:").grid(row=0, column=0, sticky='w', padx=(0, 5))
+        self.received_frames_label = ttk.Label(frame_stats_frame, text="0", foreground="blue")
+        self.received_frames_label.grid(row=0, column=1, sticky='w')
+        
+        # 처리 프레임
+        ttk.Label(frame_stats_frame, text="처리:").grid(row=1, column=0, sticky='w', padx=(0, 5))
+        self.processed_frames_label = ttk.Label(frame_stats_frame, text="0", foreground="green")
+        self.processed_frames_label.grid(row=1, column=1, sticky='w')
+        
+        # 저장 프레임
+        ttk.Label(frame_stats_frame, text="저장:").grid(row=2, column=0, sticky='w', padx=(0, 5))
+        self.saved_frames_label = ttk.Label(frame_stats_frame, text="0", foreground="purple")
+        self.saved_frames_label.grid(row=2, column=1, sticky='w')
+        
+        # 손실 프레임
+        ttk.Label(frame_stats_frame, text="손실:").grid(row=3, column=0, sticky='w', padx=(0, 5))
+        self.lost_frames_label = ttk.Label(frame_stats_frame, text="0", foreground="red")
+        self.lost_frames_label.grid(row=3, column=1, sticky='w')
+        
+        # 중간: 성능 지표
+        performance_stats_frame = ttk.LabelFrame(stats_container, text="성능 지표", padding="5")
+        performance_stats_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 5))
+        
+        # 처리율
+        ttk.Label(performance_stats_frame, text="처리율:").grid(row=0, column=0, sticky='w', padx=(0, 5))
+        self.processing_rate_label = ttk.Label(performance_stats_frame, text="0.0%", foreground="green")
+        self.processing_rate_label.grid(row=0, column=1, sticky='w')
+        
+        # 손실율
+        ttk.Label(performance_stats_frame, text="손실율:").grid(row=1, column=0, sticky='w', padx=(0, 5))
+        self.loss_rate_label = ttk.Label(performance_stats_frame, text="0.0%", foreground="red")
+        self.loss_rate_label.grid(row=1, column=1, sticky='w')
+        
+        # 저장율
+        ttk.Label(performance_stats_frame, text="저장율:").grid(row=2, column=0, sticky='w', padx=(0, 5))
+        self.save_rate_label = ttk.Label(performance_stats_frame, text="0.0%", foreground="purple")
+        self.save_rate_label.grid(row=2, column=1, sticky='w')
+        
+        # FPS
+        ttk.Label(performance_stats_frame, text="FPS:").grid(row=3, column=0, sticky='w', padx=(0, 5))
+        self.fps_label = ttk.Label(performance_stats_frame, text="0.0", foreground="blue")
+        self.fps_label.grid(row=3, column=1, sticky='w')
+        
+        # 오른쪽: 시스템 리소스
+        resource_stats_frame = ttk.LabelFrame(stats_container, text="시스템 리소스", padding="5")
+        resource_stats_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        
+        # CPU 사용률
+        ttk.Label(resource_stats_frame, text="CPU:").grid(row=0, column=0, sticky='w', padx=(0, 5))
+        self.cpu_usage_label = ttk.Label(resource_stats_frame, text="0.0%", foreground="orange")
+        self.cpu_usage_label.grid(row=0, column=1, sticky='w')
+        
+        # RAM 사용률
+        ttk.Label(resource_stats_frame, text="RAM:").grid(row=1, column=0, sticky='w', padx=(0, 5))
+        self.ram_usage_label = ttk.Label(resource_stats_frame, text="0.0%", foreground="orange")
+        self.ram_usage_label.grid(row=1, column=1, sticky='w')
+        
+        # GPU 사용률 (사용 가능한 경우)
+        ttk.Label(resource_stats_frame, text="GPU:").grid(row=2, column=0, sticky='w', padx=(0, 5))
+        self.gpu_usage_label = ttk.Label(resource_stats_frame, text="N/A", foreground="gray")
+        self.gpu_usage_label.grid(row=2, column=1, sticky='w')
+        
+        # 큐 크기
+        ttk.Label(resource_stats_frame, text="큐:").grid(row=3, column=0, sticky='w', padx=(0, 5))
+        self.queue_size_label = ttk.Label(resource_stats_frame, text="0/0/0", foreground="brown")
+        self.queue_size_label.grid(row=3, column=1, sticky='w')
     
     def setup_logging_handler(self):
         """로그 핸들러 설정"""
@@ -327,6 +421,97 @@ class RTSPProcessorGUI:
         self.current_preview_image = None
         logger.info("미리보기 스레드 중지됨")
     
+    def update_statistics_display(self, stats):
+        """통계 정보 UI 업데이트"""
+        try:
+            # 프레임 통계
+            self.received_frames_label.config(text=str(stats.get('received_frames', 0)))
+            self.processed_frames_label.config(text=str(stats.get('processed_frames', 0)))
+            self.saved_frames_label.config(text=str(stats.get('saved_frames', 0)))
+            self.lost_frames_label.config(text=str(stats.get('lost_frames', 0)))
+            
+            # 성능 지표
+            processing_rate = stats.get('processing_rate', 0.0)
+            loss_rate = stats.get('loss_rate', 0.0)
+            save_rate = stats.get('save_rate', 0.0)
+            
+            self.processing_rate_label.config(text=f"{processing_rate:.1f}%")
+            self.loss_rate_label.config(text=f"{loss_rate:.1f}%")
+            self.save_rate_label.config(text=f"{save_rate:.1f}%")
+            
+            # FPS 계산 (새로운 프레임 수 / 시간 간격)
+            current_time = time.time()
+            if hasattr(self, 'last_stats_time') and hasattr(self, 'last_received_frames'):
+                time_diff = current_time - self.last_stats_time
+                frame_diff = stats.get('received_frames', 0) - self.last_received_frames
+                fps = frame_diff / max(time_diff, 0.1)
+                self.fps_label.config(text=f"{fps:.1f}")
+            else:
+                self.fps_label.config(text="0.0")
+            
+            self.last_stats_time = current_time
+            self.last_received_frames = stats.get('received_frames', 0)
+            
+            # 시스템 리소스
+            resource_stats = stats.get('resource_stats', {})
+            cpu_usage = resource_stats.get('cpu_percent', 0.0)
+            memory_usage = resource_stats.get('memory_percent', 0.0)
+            
+            self.cpu_usage_label.config(text=f"{cpu_usage:.1f}%")
+            self.ram_usage_label.config(text=f"{memory_usage:.1f}%")
+            
+            # GPU 사용률 (사용 가능한 경우)
+            gpu_usage = resource_stats.get('gpu_percent')
+            if gpu_usage is not None:
+                self.gpu_usage_label.config(text=f"{gpu_usage:.1f}%", foreground="orange")
+            else:
+                self.gpu_usage_label.config(text="N/A", foreground="gray")
+            
+            # 큐 크기 (blur/save/preview)
+            blur_queue_size = stats.get('blur_queue_size', 0)
+            save_queue_size = stats.get('save_queue_size', 0)
+            preview_queue_size = stats.get('preview_queue_sizes', {}).get(0, 0)
+            
+            self.queue_size_label.config(text=f"{blur_queue_size}/{save_queue_size}/{preview_queue_size}")
+            
+        except Exception as e:
+            logger.error(f"통계 UI 업데이트 오류: {e}")
+    
+    def start_statistics_update(self):
+        """통계 업데이트 스레드 시작"""
+        if self.stats_update_thread and self.stats_update_thread.is_alive():
+            return
+        
+        self.stats_update_thread = threading.Thread(target=self.statistics_update_loop, daemon=True)
+        self.stats_update_thread.start()
+        logger.info("통계 업데이트 스레드 시작됨")
+    
+    def statistics_update_loop(self):
+        """통계 업데이트 루프"""
+        while self.running:
+            try:
+                if self.processor:
+                    # 프로세서에서 통계 가져오기
+                    stats = self.processor.get_statistics()
+                    
+                    # GUI 스레드에서 UI 업데이트
+                    self.root.after(0, self.update_statistics_display, stats)
+                
+                time.sleep(self.stats_update_interval)
+                
+            except Exception as e:
+                logger.error(f"통계 업데이트 루프 오류: {e}")
+                time.sleep(self.stats_update_interval)
+    
+    def stop_statistics_update(self):
+        """통계 업데이트 스레드 중지"""
+        if self.stats_update_thread and self.stats_update_thread.is_alive():
+            try:
+                self.stats_update_thread.join(timeout=2.0)
+            except:
+                pass
+        logger.info("통계 업데이트 스레드 중지됨")
+    
     def start_processing(self):
         """처리 시작"""
         try:
@@ -370,6 +555,9 @@ class RTSPProcessorGUI:
             if self.preview_enabled:
                 self.start_preview_thread()
             
+            # 통계 업데이트 스레드 시작
+            self.start_statistics_update()
+            
             # 상태 업데이트 스레드 시작
             self.start_update_thread()
             
@@ -384,6 +572,9 @@ class RTSPProcessorGUI:
             
             # 미리보기 스레드 중지
             self.stop_preview_thread()
+            
+            # 통계 업데이트 스레드 중지
+            self.stop_statistics_update()
             
             if self.processor:
                 self.processor.stop()
@@ -442,6 +633,9 @@ class RTSPProcessorGUI:
         
         # 미리보기 스레드 완전 정리
         self.stop_preview_thread()
+        
+        # 통계 업데이트 스레드 완전 정리
+        self.stop_statistics_update()
         
         self.root.destroy()
 
