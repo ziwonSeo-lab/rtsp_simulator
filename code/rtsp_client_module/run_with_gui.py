@@ -50,13 +50,14 @@ class RTSPProcessorGUI:
         self.running = False
         self.update_thread = None
         
-        # 기본 설정값들
-        self.sources = ["rtsp://example.com/stream"]
-        self.thread_count = 2
-        self.blur_workers = 1
-        self.save_workers = 1
-        self.save_enabled = False
-        self.save_path = "./output/"
+        # config.py의 기본값 로드
+        default_config = RTSPConfig()
+        self.sources = default_config.sources
+        self.thread_count = default_config.thread_count
+        self.blur_workers = default_config.blur_workers
+        self.save_workers = default_config.save_workers
+        self.save_enabled = default_config.save_enabled
+        self.save_path = default_config.save_path
         
         self.setup_ui()
         self.setup_logging_handler()
@@ -83,14 +84,15 @@ class RTSPProcessorGUI:
         ttk.Label(source_frame, text="RTSP 소스:").pack(side=tk.LEFT)
         self.source_entry = ttk.Entry(source_frame, width=50)
         self.source_entry.pack(side=tk.LEFT, padx=(5, 0), fill=tk.X, expand=True)
-        self.source_entry.insert(0, "rtsp://example.com/stream")
+        # config.py의 첫 번째 소스를 기본값으로 사용
+        self.source_entry.insert(0, self.sources[0] if self.sources else "rtsp://example.com/stream")
         
         # 스레드 수 설정
         thread_frame = ttk.Frame(config_frame)
         thread_frame.pack(fill=tk.X, pady=(5, 5))
         
         ttk.Label(thread_frame, text="스레드 수:").pack(side=tk.LEFT)
-        self.thread_var = tk.StringVar(value="2")
+        self.thread_var = tk.StringVar(value=str(self.thread_count))
         thread_spin = ttk.Spinbox(thread_frame, from_=1, to=10, width=10, textvariable=self.thread_var)
         thread_spin.pack(side=tk.LEFT, padx=(5, 0))
         
@@ -98,14 +100,14 @@ class RTSPProcessorGUI:
         save_frame = ttk.Frame(config_frame)
         save_frame.pack(fill=tk.X, pady=(5, 0))
         
-        self.save_var = tk.BooleanVar()
+        self.save_var = tk.BooleanVar(value=self.save_enabled)
         save_check = ttk.Checkbutton(save_frame, text="비디오 저장 활성화", variable=self.save_var)
         save_check.pack(side=tk.LEFT)
         
         ttk.Label(save_frame, text="저장 경로:").pack(side=tk.LEFT, padx=(20, 5))
         self.save_path_entry = ttk.Entry(save_frame, width=30)
         self.save_path_entry.pack(side=tk.LEFT, padx=(0, 5))
-        self.save_path_entry.insert(0, "./output/")
+        self.save_path_entry.insert(0, self.save_path)
         
         browse_btn = ttk.Button(save_frame, text="찾기", command=self.browse_save_path)
         browse_btn.pack(side=tk.LEFT)
@@ -197,15 +199,12 @@ class RTSPProcessorGUI:
                 messagebox.showerror("오류", "저장 경로를 입력해주세요.")
                 return
             
-            # 설정 생성
-            self.config = RTSPConfig(
-                sources=sources,
-                thread_count=thread_count,
-                blur_workers=1,
-                save_workers=1,
-                save_enabled=save_enabled,
-                save_path=save_path
-            )
+            # config.py 기본값으로 설정 생성 후 GUI 값으로 오버라이드
+            self.config = RTSPConfig()
+            self.config.sources = sources
+            self.config.thread_count = thread_count
+            self.config.save_enabled = save_enabled
+            self.config.save_path = save_path
             
             # 프로세서 생성 및 시작
             self.processor = SharedPoolRTSPProcessor(self.config)
