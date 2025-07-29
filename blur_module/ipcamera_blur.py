@@ -9,7 +9,7 @@ import csv
 import json
 
 class HeadBlurrer:
-    def __init__(self, model_path="/home/koast-user/rtsp_simulator/blur_module/best_re_final.engine", conf_threshold=0.5, enable_face_counting=False):
+    def __init__(self, model_path=None, conf_threshold=0.5, enable_face_counting=False):
         """
         HeadBlurrer 초기화
         
@@ -17,6 +17,11 @@ class HeadBlurrer:
             model_path (str): PyTorch 모델 파일 경로
             enable_face_counting (bool): 얼굴 탐지 수 기록 기능 활성화
         """
+        # 기본 모델 경로를 상대경로로 설정
+        if model_path is None:
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            model_path = os.path.join(current_dir, "models", "best_re_final.pt")
+        
         self.model_path = model_path
         self.conf_threshold = conf_threshold  # 탐지 신뢰도 임계값
         self.enable_face_counting = enable_face_counting

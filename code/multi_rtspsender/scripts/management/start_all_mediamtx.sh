@@ -11,7 +11,7 @@ for i in {0..5}; do
     cat > ../../config/mediamtx/port_${rtsp_port}.yml << EOF
 # MediaMTX 설정 - RTSP:${rtsp_port}, RTMP:${rtmp_port}
 rtspAddress: :${rtsp_port}
-protocols: [tcp,udp]
+protocols: [udp]
 rtmpAddress: :${rtmp_port}
 rtpAddress: :${rtp_port}
 rtcpAddress: :${rtcp_port}

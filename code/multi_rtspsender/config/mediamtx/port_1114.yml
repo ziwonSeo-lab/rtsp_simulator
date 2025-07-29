@@ -1,6 +1,6 @@
 # MediaMTX 설정 - RTSP:1114, RTMP:1914
 rtspAddress: :1114
-protocols: [tcp,udp]
+protocols: [udp]
 rtmpAddress: :1914
 rtpAddress: :8006
 rtcpAddress: :8007
