@@ -47,7 +47,7 @@ class RTSPConfig:
     reconnect_interval: int = 5
     connection_timeout: int = 10
     enable_processing: bool = True
-    blur_module_path: Optional[str] = "/home/szw001/development/2025/IUU/rtsp_simulator/blur_module/ipcamera_blur.py"
+    blur_module_path: Optional[str] = get_env_value('BLUR_MODULE_PATH', "/home/szw001/development/2025/IUU/rtsp_simulator/blur_module/ipcamera_blur.py")
     save_enabled: bool = True
     save_path: str = "./output/"
     save_interval: int = 300  # 프레임 단위 (20초 × 15fps = 300프레임)
