@@ -61,13 +61,12 @@ class EnhancedFFmpegVideoWriter:
             elif self.config.hardware_acceleration == "amd":
                 cmd.extend(['-hwaccel', 'amf'])
         
-        # 입력 스트림 설정 - 정확한 15fps로 해석
         cmd.extend([
             '-f', 'rawvideo',
             '-vcodec', 'rawvideo',
             '-s', f'{self.width}x{self.height}',
             '-pix_fmt', 'bgr24',
-            '-r', str(self.fps),  # 입력 FPS를 15로 강제 설정
+            '-r', str(self.fps),
             '-i', '-'
         ])
         
@@ -82,8 +81,7 @@ class EnhancedFFmpegVideoWriter:
                 cmd[-1] = codec_map[self.config.video_codec]
         
         if self.config.quality_mode == "crf":
-            # CRF 모드: compression_level을 직접 사용 (18 = 고화질)
-            crf_value = max(0, min(51, self.config.compression_level))
+            crf_value = max(0, min(51, 23 - (self.config.compression_level - 5) * 3))
             cmd.extend(['-crf', str(crf_value)])
         elif self.config.quality_mode == "cbr":
             cmd.extend(['-b:v', self.config.bitrate])
@@ -104,15 +102,8 @@ class EnhancedFFmpegVideoWriter:
         if self.config.ffmpeg_level != "none":
             cmd.extend(['-level', self.config.ffmpeg_level])
         
-        # 강력한 15fps 고정 설정
-        cmd.extend(['-r', str(self.fps)])  # 출력 FPS 15로 강제 설정
-        cmd.extend(['-vsync', 'cfr'])  # Constant Frame Rate로 15fps 강제 유지
         cmd.extend(['-g', str(self.config.keyframe_interval)])
         cmd.extend(['-pix_fmt', self.config.pixel_format])
-        
-        # 프레임 레이트 추가 강제 설정
-        if self.config.video_codec in ['libx264', 'libx265']:
-            cmd.extend(['-fflags', '+genpts'])  # PTS 재생성
         
         if self.config.video_codec == 'libx264':
             cmd.extend(['-x264-params', f'threads=auto:sliced-threads=1:aq-mode=2:me=hex:subme={self.config.compression_level}'])
@@ -258,8 +249,8 @@ def rtsp_capture_process(source, stream_id, thread_id, blur_queue, preview_queue
             spec.loader.exec_module(blur_module)
             
             if hasattr(blur_module, 'HeadBlurrer'):
-                head_blurrer = blur_module.HeadBlurrer(conf_threshold=0.3, enable_face_counting=False)
-                blur_module.apply_blur = lambda frame: head_blurrer.process_frame(frame, frame_interval=config.blur_interval)
+                head_blurrer = blur_module.HeadBlurrer()  # num_camera 매개변수 제거
+                blur_module.apply_blur = lambda frame: head_blurrer.process_frame(frame)
             
             logger.info(f"Stream {stream_id}: 블러 모듈 로드 성공")
         except Exception as e:
@@ -315,32 +306,8 @@ def rtsp_capture_process(source, stream_id, thread_id, blur_queue, preview_queue
     failed_count = 0
     start_time = time.time()
     
-    # FPS 측정을 위한 변수들
-    fps_frame_count = 0
-    fps_start_time = time.time()
-    last_fps_report = time.time()
-    
-    # 정밀한 15fps 제어를 위한 변수들
-    TARGET_FPS = config.input_fps
-    frame_interval = 1.0 / TARGET_FPS  # 66.67ms for 15fps
-    last_capture_time = start_time
-    frame_timing_error = 0.0  # 누적 타이밍 오차 보정
-    
-    # 타이밍 정확성을 위한 고해상도 시계 사용 (time 모듈은 이미 import됨)
-    if hasattr(time, 'time_ns'):
-        get_time = lambda: time.time_ns() / 1_000_000_000.0  # 나노초 해상도
-    else:
-        get_time = time.time
-    
-    # 적응적 FPS 제어 - RTSP 소스가 느릴 때 보상
-    adaptive_interval = frame_interval
-    fps_adjustment_factor = 1.0
-    
-    # 버벅임 방지를 위한 프레임 버퍼
-    frame_buffer = []
-    buffer_size = 3  # 최대 3프레임 버퍼
-    
-    logger.info(f"Stream {stream_id}: 정밀 FPS 제어 시작 - 목표: {TARGET_FPS}fps, 간격: {frame_interval*1000:.2f}ms, 고해상도 타이밍 활성화")
+    # FPS 제어를 위한 프레임 간격 계산
+    frame_interval = 1.0 / config.input_fps
     
     try:
         while not stop_event.is_set():
@@ -350,33 +317,13 @@ def rtsp_capture_process(source, stream_id, thread_id, blur_queue, preview_queue
                 if elapsed_time >= config.max_duration_seconds:
                     break
             
-            # 고해상도 타이밍으로 버벅임 방지
-            current_time = get_time()
-            expected_time = last_capture_time + frame_interval
-            time_error = current_time - expected_time
-            
-            # 엄격한 타이밍 제어 (버벅임 방지 우선)
-            if time_error < -0.002:  # 2ms 이상 빠르면 정확한 대기
-                sleep_time = min(-time_error, 0.050)  # 최대 50ms 대기
+            # FPS 제어
+            next_frame_time = start_time + (frame_count + 1) * frame_interval
+            sleep_time = next_frame_time - time.time()
+            if sleep_time > 0:
                 time.sleep(sleep_time)
-                current_time = get_time()
-            elif time_error > frame_interval * 0.3:  # 30% 이상 늦으면 스킵하지 않고 처리
-                logger.debug(f"Stream {stream_id}: 타이밍 지연 {time_error*1000:.1f}ms, 계속 진행")
-            
-            # 다음 프레임 타이밍 계산
-            last_capture_time = expected_time  # 누적 오차 방지를 위해 예상 시간 사용
             
             ret, frame = cap.read()
-            
-            # 프레임 품질 검증 (버벅임 유발 프레임 제거)
-            if ret and frame is not None:
-                # 기본적인 프레임 유효성 검사
-                if frame.size == 0 or frame.shape[0] == 0 or frame.shape[1] == 0:
-                    ret = False
-                # 완전히 검은색이거나 완전히 흰색인 프레임 제거 (손상 가능성)
-                elif np.all(frame == 0) or np.all(frame == 255):
-                    logger.debug(f"Stream {stream_id}: 비정상 프레임 건너뜀 (균일색상)")
-                    ret = False
             
             if not ret:
                 failed_count += 1
@@ -417,70 +364,39 @@ def rtsp_capture_process(source, stream_id, thread_id, blur_queue, preview_queue
             # 블러 처리 간격 적용
             should_blur = (frame_count % config.blur_interval == 0)
             
-            # 프레임 순서 보장을 위한 엄격한 타이밍 제어
-            frame_count += 1
-            capture_timestamp = datetime.fromtimestamp(current_time)
-            
-            # 프레임 중복 방지를 위한 고유 ID 생성
-            frame_unique_id = f"{stream_id}_{frame_count}_{int(current_time * 1000000)}"
-            
+            # 블러 처리 작업 데이터 준비 (메모리 효율적)
             work_item = {
                 'stream_id': stream_id,
                 'thread_id': thread_id,
-                'frame': frame.copy(),
-                'timestamp': capture_timestamp,
+                'frame': frame.copy(),  # 필요한 경우에만 복사
+                'timestamp': datetime.now(),
                 'frame_number': frame_count,
-                'frame_unique_id': frame_unique_id,  # 중복 방지용 고유 ID
                 'config': config,
-                'should_blur': should_blur,
-                'capture_time': current_time,
-                'target_fps': TARGET_FPS,
-                'sequence_number': frame_count  # 순서 보장용 시퀀스 번호
+                'should_blur': should_blur  # 블러 처리 여부 플래그 추가
             }
             
-            # 강제적 순차 처리로 버벅임 방지
-            max_retries = 3
-            for attempt in range(max_retries):
+            # 블러 큐에 전송 (간격에 따라)
+            if should_blur:
                 try:
-                    # 더 긴 타임아웃으로 순서 보장
-                    blur_queue.put(work_item, timeout=0.5)  # 500ms 타임아웃
-                    break
+                    blur_queue.put_nowait(work_item)
                 except queue.Full:
-                    if attempt < max_retries - 1:
-                        # 큐가 가득 찬 경우 잠시 대기 후 재시도
-                        time.sleep(0.01 * (attempt + 1))  # 점진적 백오프
-                    else:
-                        # 최종 시도: 가장 오래된 프레임 제거
-                        try:
-                            discarded_item = blur_queue.get_nowait()
-                            logger.debug(f"Stream {stream_id}: 프레임 {discarded_item.get('frame_number', 'unknown')} 버림 (최종 시도)")
-                            blur_queue.put_nowait(work_item)
-                        except:
-                            logger.warning(f"Stream {stream_id}: 프레임 {frame_count} 완전 건너뜀")
-                            continue
-            fps_frame_count += 1
+                    try:
+                        blur_queue.get_nowait()
+                        blur_queue.put_nowait(work_item)
+                        logger.warning(f"Stream {stream_id}: 블러큐 오버플로우")
+                    except:
+                        pass
+                    time.sleep(0.01)  # 큐가 가득 찰 때 CPU 사용률 감소를 위한 대기
             
-            # 1초마다 FPS 측정 및 출력
-            current_fps_time = time.time()
-            if current_fps_time - last_fps_report >= 1.0:
-                fps_duration = current_fps_time - fps_start_time
-                if fps_duration > 0:
-                    capture_fps = fps_frame_count / fps_duration
-                    logger.info(f"📹 [CAPTURE] Stream {stream_id}: 실제 캡처 FPS = {capture_fps:.1f}, "
-                               f"목표 = {config.input_fps:.1f}, 블러큐: {blur_queue.qsize()}")
-                
-                # FPS 측정 리셋
-                fps_frame_count = 0
-                fps_start_time = current_fps_time
-                last_fps_report = current_fps_time
+            frame_count += 1
                 
             # 주기적 로깅 및 메모리 정리
             if frame_count % 500 == 0:
                 import gc
                 gc.collect()
-                logger.info(f"Stream {stream_id}: {frame_count}프레임, 메모리 정리 완료")
+                logger.info(f"Stream {stream_id}: {frame_count}프레임, 블러큐: {blur_queue.qsize()}, 메모리 정리 완료")
             elif frame_count % 100 == 0:
-                logger.debug(f"Stream {stream_id}: {frame_count}프레임")
+                logger.info(f"Stream {stream_id}: {frame_count}프레임, 블러큐: {blur_queue.qsize()}")
             
             # 미리보기는 블러 처리 후 blur_worker_process에서 처리
                     
@@ -491,14 +407,13 @@ def rtsp_capture_process(source, stream_id, thread_id, blur_queue, preview_queue
         logger.info(f"캡처 프로세스 종료 - Stream {stream_id}, 총 {frame_count}개 프레임")
 
 
-def blur_worker_process(worker_id, blur_queue, save_queues, preview_queue, stats_dict, stop_event):
-    """블러 처리 워커 - 블러 결과 캐시 기능 포함"""
+def blur_worker_process(worker_id, blur_queue, save_queue, preview_queue, stats_dict, stop_event):
+    """블러 처리 워커"""
     logger = logging.getLogger(f"BLUR_WORKER_{worker_id}")
     current_pid = os.getpid()
     logger.info(f"🔍 블러 워커 실행 중 - PID: {current_pid}, Worker: {worker_id}")
     logger.info(f"   🆔 프로세스 ID: {current_pid}")
     logger.info(f"   🔧 워커 ID: {worker_id}")
-    logger.info(f"   🎯 스마트 블러 시스템 활성화 - 3프레임마다 위치 탐지, 캐시된 위치에 블러 적용")
     
     processed_count = 0
     
@@ -506,14 +421,6 @@ def blur_worker_process(worker_id, blur_queue, save_queues, preview_queue, stats
     frame = None
     processed_frame = None
     work_item = None
-    
-    # 블러 위치 정보 캐시 (스트림별)
-    blur_cache = {}  # {stream_id: {'last_blur_locations': [], 'last_detection_frame': int}}
-    
-    # FPS 측정을 위한 변수들
-    blur_fps_frame_count = 0
-    blur_fps_start_time = time.time()
-    blur_last_fps_report = time.time()
     
     # blur_module을 각 워커에서 독립적으로 로드 (캐시용)
     blur_modules_cache = {}
@@ -552,13 +459,13 @@ def blur_worker_process(worker_id, blur_queue, save_queues, preview_queue, stats
                         spec.loader.exec_module(blur_module)
                         
                         if hasattr(blur_module, 'HeadBlurrer'):
-                            head_blurrer = blur_module.HeadBlurrer(conf_threshold=0.3, enable_face_counting=False)
-                            blur_module.apply_blur = lambda frame: head_blurrer.process_frame(frame, frame_interval=config.blur_interval)
+                            head_blurrer = blur_module.HeadBlurrer()
+                            blur_module.apply_blur = lambda frame: head_blurrer.process_frame(frame)
                         
                         blur_modules_cache[config.blur_module_path] = blur_module
                         logger.info(f"Worker {worker_id}: 블러 모듈 로드 성공")
                     except Exception as e:
-                        logger.warning(f"Worker {worker_id}: 블러 모듈 로드 실패, 기본 블러 사용 - {e}")
+                        logger.error(f"Worker {worker_id}: 블러 모듈 로드 실패 - {e}")
                         blur_modules_cache[config.blur_module_path] = None
                 elif config.blur_module_path in blur_modules_cache:
                     blur_module = blur_modules_cache[config.blur_module_path]
@@ -567,25 +474,18 @@ def blur_worker_process(worker_id, blur_queue, save_queues, preview_queue, stats
                 if not config.high_performance_mode:
                     start_time = time.time()
                 
-                # 단순한 블러 처리 (모든 프레임 처리 + 간격 제어)
-                stream_id = work_item['stream_id']
-                frame_number = work_item['frame_number']
-                should_blur = work_item.get('should_blur', True)  # 3프레임마다 True
+                # 블러 처리 (간격에 따라)
+                should_blur = work_item.get('should_blur', True)  # 기본값은 True
                 
-                if config.blur_enabled:
-                    # 블러 모듈 사용 시도 (fallback 지원)
+                if config.blur_enabled and should_blur:
                     if blur_module and hasattr(blur_module, 'apply_blur'):
                         try:
                             processed_frame = blur_module.apply_blur(frame)
-                            logger.debug(f"Worker {worker_id}: {stream_id} 커스텀 블러 적용 (프레임 {frame_number})")
                         except Exception as e:
-                            logger.warning(f"Worker {worker_id}: 커스텀 블러 모듈 오류, 기본 블러 사용 - {e}")
+                            logger.error(f"Worker {worker_id}: 사용자 블러 처리 오류 - {e}")
                             processed_frame = cv2.GaussianBlur(frame, (15, 15), 0)
                     else:
-                        # 기본 가우시안 블러 (모듈 로드 실패 시)
                         processed_frame = cv2.GaussianBlur(frame, (15, 15), 0)
-                        if processed_count == 0:  # 첫 번째만 로그 출력
-                            logger.info(f"Worker {worker_id}: 블러 모듈 없음, 기본 가우시안 블러 사용")
                 else:
                     processed_frame = frame
                 
@@ -626,31 +526,24 @@ def blur_worker_process(worker_id, blur_queue, save_queues, preview_queue, stats
                     cv2.putText(processed_frame, text, (10, 30), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 
-                # 스트림별 저장 큐로 전송 (원본 + 블러 영상 지원)
+                # 저장 큐로 전송
                 if config.save_enabled:
-                    stream_id = work_item['stream_id']
                     save_item = {
-                        'stream_id': stream_id,
+                        'stream_id': work_item['stream_id'],
                         'thread_id': work_item['thread_id'],
-                        'original_frame': frame,  # 원본 프레임 추가
-                        'processed_frame': processed_frame,  # 블러 처리된 프레임
+                        'frame': processed_frame,
                         'timestamp': work_item['timestamp'],
                         'frame_number': work_item['frame_number'],
                         'config': config
                     }
                     
                     try:
-                        # 해당 스트림 전용 큐에 전송
-                        if stream_id in save_queues:
-                            save_queues[stream_id].put_nowait(save_item)
-                        else:
-                            logger.warning(f"Worker {worker_id}: 스트림 {stream_id}의 저장큐가 없음")
+                        save_queue.put_nowait(save_item)
                     except queue.Full:
                         try:
-                            if stream_id in save_queues:
-                                save_queues[stream_id].get_nowait()
-                                save_queues[stream_id].put_nowait(save_item)
-                                logger.warning(f"Worker {worker_id}: 스트림 {stream_id} 저장큐 오버플로우")
+                            save_queue.get_nowait()
+                            save_queue.put_nowait(save_item)
+                            logger.warning(f"Worker {worker_id}: 저장큐 오버플로우")
                         except:
                             pass
                 
@@ -675,32 +568,14 @@ def blur_worker_process(worker_id, blur_queue, save_queues, preview_queue, stats
                 # 통계 업데이트
                 stats_dict[f'{stream_id}_processed'] = stats_dict.get(f'{stream_id}_processed', 0) + 1
                 processed_count += 1
-                blur_fps_frame_count += 1
-                
-                # 1초마다 FPS 측정 및 출력
-                current_blur_time = time.time()
-                if current_blur_time - blur_last_fps_report >= 1.0:
-                    blur_duration = current_blur_time - blur_fps_start_time
-                    if blur_duration > 0:
-                        blur_fps = blur_fps_frame_count / blur_duration
-                        total_save_queue_size = sum(q.qsize() for q in save_queues.values())
-                        logger.info(f"🔍 [BLUR] Worker {worker_id}: 블러 처리 FPS = {blur_fps:.1f}, "
-                                   f"저장큐 총합: {total_save_queue_size}")
-                    
-                    # FPS 측정 리셋
-                    blur_fps_frame_count = 0
-                    blur_fps_start_time = current_blur_time
-                    blur_last_fps_report = current_blur_time
                 
                 # 메모리 정리 (100프레임마다)
                 if processed_count % 100 == 0:
                     import gc
                     gc.collect()
-                    total_save_queue_size = sum(q.qsize() for q in save_queues.values())
-                    logger.info(f"Worker {worker_id}: {processed_count}프레임 처리, 저장큐 총합: {total_save_queue_size}, 메모리 정리 완료")
+                    logger.info(f"Worker {worker_id}: {processed_count}프레임 처리, 저장큐: {save_queue.qsize()}, 메모리 정리 완료")
                 elif processed_count % 50 == 0:
-                    total_save_queue_size = sum(q.qsize() for q in save_queues.values())
-                    logger.info(f"Worker {worker_id}: {processed_count}프레임 처리, 저장큐 총합: {total_save_queue_size}")
+                    logger.info(f"Worker {worker_id}: {processed_count}프레임 처리, 저장큐: {save_queue.qsize()}")
                 
                 # 원본 프레임 메모리 해제 (안전한 방법)
                 try:
@@ -728,24 +603,17 @@ def blur_worker_process(worker_id, blur_queue, save_queues, preview_queue, stats
         logger.info(f"블러 워커 종료 - Worker {worker_id}, 처리: {processed_count}")
 
 
-def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_output_dir, config, shared_stream_last_save_times, stream_timing_lock, dedicated_stream_id=None):
-    """저장 워커 - 스트림별 독립적인 15fps 제어"""
+def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_output_dir, config=None):
+    """저장 워커 (2단계 저장 지원)"""
     logger = logging.getLogger(f"SAVE_WORKER_{worker_id}")
     current_pid = os.getpid()
     logger.info(f"💾 저장 워커 실행 중 - PID: {current_pid}, Worker: {worker_id}")
     logger.info(f"   🆔 프로세스 ID: {current_pid}")
     logger.info(f"   🔧 워커 ID: {worker_id}")
     logger.info(f"   📁 저장 경로: {base_output_dir}")
-    if dedicated_stream_id:
-        logger.info(f"   🎯 전용 스트림: {dedicated_stream_id} (스트림별 독립적 15fps 제어)")
-    
-    # 설정 유효성 검사
-    if not config:
-        logger.error(f"Worker {worker_id}: config가 None입니다. 저장 워커를 종료합니다.")
-        return
     
     # 2단계 저장 설정
-    two_stage_enabled = hasattr(config, 'two_stage_storage') and config.two_stage_storage
+    two_stage_enabled = config and hasattr(config, 'two_stage_storage') and config.two_stage_storage
     if two_stage_enabled:
         logger.info(f"   🔄 2단계 저장 활성화: SSD({config.ssd_temp_path}) → HDD({config.hdd_final_path})")
         temp_prefix = getattr(config, 'temp_file_prefix', 't_')
@@ -761,26 +629,11 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
     file_counters = {}
     video_frame_counts = {}
     stream_dirs = {}
-    stream_file_start_times = {}  # 각 스트림별 파일 시작 시간 추적
-    last_sequence_numbers = {}  # 스트림별 마지막 처리된 시퀀스 번호 (중복 방지)
-    processed_frame_ids = set()  # 처리된 프레임 ID 집합 (중복 방지)
     
-    # 정밀한 15fps 제어 변수 (워커별 로컬)
-    TARGET_FPS = 15.0
-    frame_interval = 1.0 / TARGET_FPS  # 66.67ms 간격
-    last_save_time = 0  # 로컬 타이밍 제어
-    timing_tolerance = frame_interval * 0.3  # 30% 허용 오차 (20ms) - 완화
-    accumulated_error = 0.0  # 누적 타이밍 오차
-    
-    logger.info(f"   ⏱️ FFmpeg CFR 모드로 15fps 제어 - 모든 프레임을 FFmpeg에 전달")
-    if dedicated_stream_id:
-        logger.info(f"   🎯 {dedicated_stream_id} 전용 워커 - FFmpeg 기반 15fps 제어")
-    
-    # FPS 측정을 위한 변수들
-    save_fps_frame_count = 0
-    save_fps_start_time = time.time()
-    save_last_fps_report = time.time()
-    save_stream_fps = {}  # 스트림별 FPS 측정
+    # 15fps 제한을 위한 타이머 (스트림별)
+    last_save_time = {}  # 각 스트림별 마지막 저장 시간
+    target_fps = 15.0
+    frame_interval = 1.0 / target_fps  # 66.7ms 간격
     
     def _check_ffmpeg():
         try:
@@ -803,45 +656,9 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
                 save_item = save_queue.get(timeout=1.0)
                 
                 stream_id = save_item['stream_id']
-                
-                # 프레임 중복 방지 - 고유 ID 체크
-                frame_unique_id = save_item.get('frame_unique_id')
-                sequence_number = save_item.get('sequence_number', 0)
-                
-                if frame_unique_id and frame_unique_id in processed_frame_ids:
-                    logger.debug(f"Worker {worker_id}: 중복 프레임 건너뜀 - {frame_unique_id}")
-                    continue
-                
-                # 엄격한 순서 보장 - 버벅임 방지
-                last_seq = last_sequence_numbers.get(stream_id, 0)
-                if sequence_number > 0:
-                    # 순서가 크게 역행하는 프레임은 버벅임 원인이므로 제거
-                    if sequence_number < last_seq - 2:  # 2프레임 이전은 건너뜀 (더 엄격)
-                        logger.debug(f"Worker {worker_id}: 순서 역행 프레임 제거 - seq:{sequence_number}, last:{last_seq}")
-                        continue
-                    # 너무 앞서가는 프레임도 제거 (미래 프레임)
-                    elif sequence_number > last_seq + 10:  # 10프레임 이상 앞서면 이상
-                        logger.debug(f"Worker {worker_id}: 미래 프레임 제거 - seq:{sequence_number}, last:{last_seq}")
-                        continue
-                
-                # 처리된 프레임으로 기록
-                if frame_unique_id:
-                    processed_frame_ids.add(frame_unique_id)
-                    # 메모리 관리: 너무 많은 ID 저장 방지
-                    if len(processed_frame_ids) > 1000:
-                        processed_frame_ids.clear()
-                
-                last_sequence_numbers[stream_id] = max(last_sequence_numbers.get(stream_id, 0), sequence_number)
-                
-                # 원본 프레임과 블러 프레임 추출 (backward compatibility)
-                original_frame = save_item.get('original_frame', save_item.get('frame'))
-                processed_frame = save_item.get('processed_frame', save_item.get('frame'))
+                frame = save_item['frame']
                 timestamp = save_item['timestamp']
                 config = save_item['config']
-                
-                # 전용 스트림 워커인 경우 다른 스트림 프레임 무시
-                if dedicated_stream_id and stream_id != dedicated_stream_id:
-                    continue
                 
                 # 스트림별 디렉토리 생성
                 if stream_id not in stream_dirs:
@@ -851,44 +668,26 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
                     frame_counts[stream_id] = 0
                     file_counters[stream_id] = 0
                     video_frame_counts[stream_id] = 0
-                    stream_file_start_times[stream_id] = current_time  # 스트림 시작 시간 기록
+                    last_save_time[stream_id] = 0  # 첫 프레임은 바로 저장
                 
                 frame_counts[stream_id] += 1
                 
-                # FFmpeg vsync cfr에 15fps 제어를 맡김 - 모든 프레임을 전달
+                # 15fps 제한 체크 (66.7ms 간격)
                 current_time = time.time()
+                time_since_last_save = current_time - last_save_time[stream_id]
                 
-                # 첫 번째 프레임 로그
-                if last_save_time == 0:
-                    last_save_time = current_time
-                    logger.info(f"Worker {worker_id}: {stream_id} 저장 시작 - FFmpeg CFR 모드로 15fps 제어")
+                if time_since_last_save < frame_interval:
+                    # 아직 15fps 간격이 지나지 않았으므로 프레임 스킵
+                    continue
                 
-                # 모든 프레임을 FFmpeg에 전달 (FFmpeg가 15fps로 조정)
+                # 15fps 간격이 지났으므로 저장 진행
+                last_save_time[stream_id] = current_time
                 
                 # 영상으로만 저장 (container_format이 비디오 포맷인 경우)
                 if config.container_format in ['mp4', 'mkv', 'webm', 'avi']:
-                    # 시간 기반 새 비디오 파일 시작 조건 체크
-                    should_start_new_file = False
-                    
-                    if stream_id not in video_writers:
-                        # 첫 번째 파일
-                        should_start_new_file = True
-                    elif hasattr(config, 'save_interval_seconds') and config.save_interval_seconds > 0:
-                        # 시간 기반 파일 분할 (우선순위)
-                        file_start_time = stream_file_start_times.get(stream_id, current_time)
-                        file_duration = current_time - file_start_time
-                        if file_duration >= config.save_interval_seconds:
-                            should_start_new_file = True
-                            logger.info(f"Worker {worker_id}: {stream_id} 시간 기반 파일 분할 "
-                                       f"({file_duration:.1f}초 ≥ {config.save_interval_seconds}초)")
-                    else:
-                        # 프레임 기반 파일 분할 (폴백)
-                        if video_frame_counts[stream_id] >= config.save_interval:
-                            should_start_new_file = True
-                            logger.info(f"Worker {worker_id}: {stream_id} 프레임 기반 파일 분할 "
-                                       f"({video_frame_counts[stream_id]} ≥ {config.save_interval})")
-                    
-                    if should_start_new_file:
+                    # 새 비디오 파일 시작 조건
+                    if (stream_id not in video_writers or 
+                        video_frame_counts[stream_id] >= config.save_interval):
                         
                         # 기존 비디오 writer 종료 및 2단계 저장 처리
                         if stream_id in video_writers:
@@ -931,13 +730,10 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
                         # 새 비디오 파일 시작
                         file_counters[stream_id] += 1
                         video_frame_counts[stream_id] = 0
-                        stream_file_start_times[stream_id] = current_time  # 파일 시작 시간 기록
                         
-                        # 파일명 생성 (원본/블러 비디오 지원)
+                        # 파일명 생성 (2단계 저장 지원)
                         timestamp_str = timestamp.strftime("%Y%m%d_%H%M%S")
-                        
-                        # 원본 비디오 파일명 (블러 비활성화 시)
-                        base_filename = f"{stream_id}_original_{timestamp_str}_part{file_counters[stream_id]:03d}.{config.container_format}"
+                        base_filename = f"{stream_id}_{timestamp_str}_part{file_counters[stream_id]:03d}.{config.container_format}"
                         
                         if two_stage_enabled:
                             # 임시 파일명 (접두사 추가)
@@ -948,8 +744,8 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
                             filename = base_filename
                             filepath = os.path.join(stream_dirs[stream_id], filename)
                         
-                        # 비디오 writer 초기화 (원본/블러 뒤 비디오 지원)
-                        height, width = processed_frame.shape[:2]  # processed_frame을 기준으로 크기 결정
+                        # 비디오 writer 초기화
+                        height, width = frame.shape[:2]
                         fps = max(1.0, config.input_fps)
                         
                         logger.info(f"Stream {stream_id}: 비디오 writer 생성 시작")
@@ -1055,52 +851,17 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
                                 del video_writers[stream_id]
                             continue
                     
-                    # 블러 처리된 프레임을 비디오에 추가
+                    # 프레임을 비디오에 추가
                     if stream_id in video_writers and video_writers[stream_id].isOpened():
                         try:
-                            # 블러 활성화 여부에 따라 원본 또는 블러 처리된 프레임 저장
-                            frame_to_save = original_frame if not config.blur_enabled else processed_frame
-                            success = video_writers[stream_id].write(frame_to_save)
+                            success = video_writers[stream_id].write(frame)
                             if success:
                                 video_frame_counts[stream_id] += 1
                                 saved_count += 1
-                                save_fps_frame_count += 1
                                 stats_dict[f'{stream_id}_saved'] = stats_dict.get(f'{stream_id}_saved', 0) + 1
                                 
-                                # 스트림별 FPS 카운터 초기화
-                                if stream_id not in save_stream_fps:
-                                    save_stream_fps[stream_id] = {'count': 0, 'start_time': current_time}
-                                save_stream_fps[stream_id]['count'] += 1
-                                
-                                # 1초마다 FPS 측정 및 출력
-                                if current_time - save_last_fps_report >= 1.0:
-                                    save_duration = current_time - save_fps_start_time
-                                    if save_duration > 0:
-                                        actual_save_fps = save_fps_frame_count / save_duration
-                                        
-                                        if dedicated_stream_id:
-                                            logger.info(f"💾 [SAVE] Worker {worker_id} ({dedicated_stream_id}): "
-                                                       f"저장 FPS = {actual_save_fps:.1f}, 목표 = {TARGET_FPS:.1f}, "
-                                                       f"큐: {save_queue.qsize()}")
-                                        else:
-                                            # 스트림별 FPS 계산 (레거시)
-                                            stream_fps_info = []
-                                            for sid, fps_data in save_stream_fps.items():
-                                                stream_duration = current_time - fps_data['start_time']
-                                                if stream_duration > 0:
-                                                    stream_fps = fps_data['count'] / stream_duration
-                                                    stream_fps_info.append(f"{sid}:{stream_fps:.1f}")
-                                            
-                                            logger.info(f"💾 [SAVE] Worker {worker_id}: 전체 저장 FPS = {actual_save_fps:.1f}, "
-                                                       f"스트림별 FPS = [{', '.join(stream_fps_info)}], 큐: {save_queue.qsize()}")
-                                    
-                                    # FPS 측정 리셋
-                                    save_fps_frame_count = 0
-                                    save_fps_start_time = current_time
-                                    save_last_fps_report = current_time
-                                    # 스트림별 FPS 카운터 리셋
-                                    for sid in save_stream_fps:
-                                        save_stream_fps[sid] = {'count': 0, 'start_time': current_time}
+                                if saved_count % 25 == 0:
+                                    logger.info(f"Worker {worker_id}: {saved_count}프레임 저장, 큐: {save_queue.qsize()}")
                             else:
                                 logger.error(f"Stream {stream_id}: 비디오 프레임 쓰기 실패")
                                 

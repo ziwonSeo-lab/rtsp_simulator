@@ -3,21 +3,59 @@ import time
 from datetime import datetime
 import os
 import argparse
-from ultralytics import YOLO
 import numpy as np
 import csv
 import json
+from dotenv import load_dotenv
+
+# ultralytics 선택적 임포트
+try:
+    from ultralytics import YOLO
+    YOLO_AVAILABLE = True
+except ImportError:
+    YOLO_AVAILABLE = False
+    print("⚠️ ultralytics가 설치되지 않음 - 기본 블러 모드로 동작")
+
+# .env 파일 로드
+load_dotenv()
+
+def get_model_path():
+    """환경변수에서 HEAD_BLUR_MODEL_PATH를 가져오는 함수"""
+    env_model_path = os.getenv('HEAD_BLUR_MODEL_PATH')
+    if env_model_path:
+        # 상대 경로인 경우 절대 경로로 변환
+        if not os.path.isabs(env_model_path):
+            # 현재 파일의 디렉토리 기준으로 프로젝트 루트 찾기
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.dirname(current_dir)  # blur_module의 부모 디렉토리
+            model_path = os.path.join(project_root, env_model_path)
+        else:
+            model_path = env_model_path
+        
+        print(f"✅ 환경변수에서 모델 경로 로드: {model_path}")
+        return model_path
+    else:
+        # 기본 경로 (fallback)
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        default_model_path = os.path.join(current_dir, "models", "best_re_final.pt")
+        print(f"⚠️ 환경변수 HEAD_BLUR_MODEL_PATH가 없음. 기본 경로 사용: {default_model_path}")
+        return default_model_path
 
 class HeadBlurrer:
-    def __init__(self, model_path="/home/koast-user/rtsp_simulator/blur_module/best_re_final.engine", conf_threshold=0.5, enable_face_counting=False):
+    def __init__(self, model_path=None, conf_threshold=0.5, enable_face_counting=False):
         """
         HeadBlurrer 초기화
         
         Args:
-            model_path (str): PyTorch 모델 파일 경로
+            model_path (str): PyTorch 모델 파일 경로 (None인 경우 환경변수에서 가져옴)
+            conf_threshold (float): 탐지 신뢰도 임계값
             enable_face_counting (bool): 얼굴 탐지 수 기록 기능 활성화
         """
-        self.model_path = model_path
+        # model_path가 None인 경우 환경변수에서 가져오기
+        if model_path is None:
+            self.model_path = get_model_path()
+        else:
+            self.model_path = model_path
         self.conf_threshold = conf_threshold  # 탐지 신뢰도 임계값
         self.enable_face_counting = enable_face_counting
         
@@ -282,7 +320,8 @@ def main():
     # 환경변수에서 설정 읽기
     interval = args.interval
     
-    model_path = '/home/koast-user/rtsp_simulator/blur_module/best_re_final.engine'
+    # 환경변수에서 모델 경로 가져오기
+    model_path = get_model_path()
     confidence_threshold = args.confidence
     rtsp_url = 'rtsp://root:root@192.168.1.101:554/cam0_0'  # 단일 카메라
     
@@ -328,7 +367,6 @@ def main():
 
     cap = cv2.VideoCapture(rtsp_url)
     blurrer = HeadBlurrer(
-        model_path=model_path, 
         conf_threshold=confidence_threshold,
         enable_face_counting=enable_face_counting
     )
@@ -428,7 +466,6 @@ if __name__ == "__main__":
 # ─────────────────────────────────────────────────────────────
 
 _blurrer = HeadBlurrer(
-    model_path="/home/koast-user/rtsp_simulator/blur_module/best_re_final.engine", 
     conf_threshold=0.3,
     enable_face_counting=False  # 기본적으로 비활성화
 )
