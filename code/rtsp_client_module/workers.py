@@ -259,7 +259,7 @@ def rtsp_capture_process(source, stream_id, thread_id, blur_queue, preview_queue
             
             if hasattr(blur_module, 'HeadBlurrer'):
                 head_blurrer = blur_module.HeadBlurrer(conf_threshold=0.3, enable_face_counting=False)
-                blur_module.apply_blur = lambda frame: head_blurrer.process_frame(frame, frame_interval=config.blur_interval)
+                blur_module.apply_blur = lambda frame, should_detect=None: head_blurrer.process_frame(frame, frame_interval=config.blur_interval, should_detect=should_detect)
             
             logger.info(f"Stream {stream_id}: 블러 모듈 로드 성공")
         except Exception as e:
@@ -553,7 +553,7 @@ def blur_worker_process(worker_id, blur_queue, save_queues, preview_queue, stats
                         
                         if hasattr(blur_module, 'HeadBlurrer'):
                             head_blurrer = blur_module.HeadBlurrer(conf_threshold=0.3, enable_face_counting=False)
-                            blur_module.apply_blur = lambda frame: head_blurrer.process_frame(frame, frame_interval=config.blur_interval)
+                            blur_module.apply_blur = lambda frame, should_detect=None: head_blurrer.process_frame(frame, frame_interval=config.blur_interval, should_detect=should_detect)
                         
                         blur_modules_cache[config.blur_module_path] = blur_module
                         logger.info(f"Worker {worker_id}: 블러 모듈 로드 성공")
@@ -576,8 +576,8 @@ def blur_worker_process(worker_id, blur_queue, save_queues, preview_queue, stats
                     # 블러 모듈 사용 시도 (fallback 지원)
                     if blur_module and hasattr(blur_module, 'apply_blur'):
                         try:
-                            processed_frame = blur_module.apply_blur(frame)
-                            logger.debug(f"Worker {worker_id}: {stream_id} 커스텀 블러 적용 (프레임 {frame_number})")
+                            processed_frame = blur_module.apply_blur(frame, should_detect=should_blur)
+                            logger.debug(f"Worker {worker_id}: {stream_id} 커스텀 블러 적용 (프레임 {frame_number}, 탐지: {should_blur})")
                         except Exception as e:
                             logger.warning(f"Worker {worker_id}: 커스텀 블러 모듈 오류, 기본 블러 사용 - {e}")
                             processed_frame = cv2.GaussianBlur(frame, (15, 15), 0)

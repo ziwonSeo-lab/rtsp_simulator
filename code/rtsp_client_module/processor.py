@@ -53,7 +53,12 @@ class SharedPoolRTSPProcessor:
         
         # 멀티프로세싱 요소들
         self.manager = Manager()
-        self.blur_queue = Queue(maxsize=config.blur_queue_size)
+        
+        # 스트림별 독립적인 블러 큐 생성 (블러 지속성을 위해)
+        self.blur_queues = {}
+        for thread_id in range(config.thread_count):
+            stream_id = f"stream_{thread_id+1}"
+            self.blur_queues[stream_id] = Queue(maxsize=config.blur_queue_size)
         
         # 스트림별 독립적인 저장 큐 생성 (15fps 제어를 위해)
         self.save_queues = {}
@@ -167,7 +172,7 @@ class SharedPoolRTSPProcessor:
             
             proc = Process(
                 target=rtsp_capture_process,
-                args=(source, stream_id, thread_id, self.blur_queue, self.preview_queue, 
+                args=(source, stream_id, thread_id, self.blur_queues[stream_id], self.preview_queue, 
                       self.stats_dict, self.stop_event, self.config),
                 name=f"Capture_{stream_id}"
             )
@@ -176,18 +181,21 @@ class SharedPoolRTSPProcessor:
             
             logger.info(f"📹 캡처 프로세스 시작: {stream_id} (PID: {proc.pid}) - {source}")
         
-        # 블러 처리 워커들 시작
+        # 스트림별 전용 블러 처리 워커들 시작
         logger.info("-" * 40)
-        for i in range(self.config.blur_workers):
+        for thread_id in range(self.config.thread_count):
+            stream_id = f"stream_{thread_id+1}"
+            worker_id = f"{stream_id}_blur"
+            
             proc = Process(
                 target=blur_worker_process,
-                args=(i+1, self.blur_queue, self.save_queues, self.preview_queue,
+                args=(worker_id, self.blur_queues[stream_id], self.save_queues, self.preview_queue,
                       self.stats_dict, self.stop_event),
-                name=f"BlurWorker_{i+1}"
+                name=f"BlurWorker_{stream_id}"
             )
             proc.start()
             self.blur_processes.append(proc)
-            logger.info(f"🔍 블러 워커 시작: Worker {i+1} (PID: {proc.pid})")
+            logger.info(f"🔍 블러 워커 시작: {stream_id} 전용 워커 (PID: {proc.pid})")
         
         # 저장 워커들 시작 (스트림별 전용 워커)
         if self.config.save_enabled:

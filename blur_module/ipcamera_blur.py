@@ -42,7 +42,7 @@ def get_model_path():
         return default_model_path
 
 class HeadBlurrer:
-    def __init__(self, model_path=None, conf_threshold=0.5, enable_face_counting=False):
+    def __init__(self, model_path=None, conf_threshold=0.3, enable_face_counting=False):
         """
         HeadBlurrer 초기화
         
@@ -251,14 +251,28 @@ class HeadBlurrer:
         
         return result_image
 
-    def process_frame(self, frame, frame_interval=1, blur_strength=0.01):
+    def process_frame(self, frame, frame_interval=1, blur_strength=0.01, should_detect=None):
         """
         n 프레임마다 탐지 수행, 그 외에는 이전 탐지 결과 사용
+        
+        Args:
+            frame: 입력 프레임
+            frame_interval: 탐지 간격 (should_detect가 None일 때만 사용)
+            blur_strength: 블러 강도
+            should_detect: 외부에서 탐지 여부 결정 (None이면 내부 간격 제어 사용)
         """
         detection_performed = False
-        if self.frame_count % frame_interval == 0:
-            self.last_head_boxes = self._detect_heads(frame)
-            detection_performed = True
+        
+        # 외부에서 탐지 여부를 명시적으로 지정한 경우 우선 사용
+        if should_detect is not None:
+            if should_detect:
+                self.last_head_boxes = self._detect_heads(frame)
+                detection_performed = True
+        else:
+            # 기존 방식: 내부 간격 제어
+            if self.frame_count % frame_interval == 0:
+                self.last_head_boxes = self._detect_heads(frame)
+                detection_performed = True
             
         # 얼굴 탐지 기록 (테스트 기능)
         face_count = len(self.last_head_boxes)
@@ -293,7 +307,7 @@ def main():
     )
 
     parser.add_argument(
-        "-c", "--confidence", type=float, default=0.3,
+        "-c", "--confidence", type=float, default=0.2,
         help="머리 탐지 신뢰도 임계값 (기본값: 0.3)"
     )
     parser.add_argument(
@@ -472,14 +486,16 @@ _blurrer = HeadBlurrer(
 
 def apply_blur(frame,
                frame_interval: int = 3,
-               blur_strength: float = 0.01):
+               blur_strength: float = 0.01,
+               should_detect=None):
     """
     단일 카메라용 블러 적용 함수
     
     Args:
         frame: 입력 프레임
-        frame_interval: 탐지 간격
+        frame_interval: 탐지 간격 (should_detect가 None일 때만 사용)
         blur_strength: 블러 강도
+        should_detect: 외부에서 탐지 여부 결정 (None이면 내부 간격 제어 사용)
     
     Returns:
         블러 처리된 프레임
@@ -488,6 +504,7 @@ def apply_blur(frame,
         frame, 
         frame_interval=frame_interval,
         blur_strength=blur_strength,
+        should_detect=should_detect
     )
 
 def enable_face_counting_for_blurrer(enable=True, output_dir="output"):
