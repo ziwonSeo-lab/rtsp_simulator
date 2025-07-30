@@ -4,6 +4,9 @@ import os
 import logging
 from dataclasses import dataclass, field
 from typing import Optional, List
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -102,3 +105,7 @@ class RTSPConfig:
     file_move_workers: int = 2  # 파일 이동 워커 수
     file_move_queue_size: int = 100  # 파일 이동 큐 크기
     temp_file_prefix: str = "t_"  # 임시 파일 접두사
+
+if __name__ == "__main__":
+    print(get_env_value("BLUR_MODULE_PATH", None))
+    

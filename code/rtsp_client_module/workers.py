@@ -843,6 +843,9 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
                 if dedicated_stream_id and stream_id != dedicated_stream_id:
                     continue
                 
+                # FFmpeg vsync cfr에 15fps 제어를 맡김 - 모든 프레임을 전달
+                current_time = time.time()
+                
                 # 스트림별 디렉토리 생성
                 if stream_id not in stream_dirs:
                     stream_dir = os.path.join(base_output_dir, stream_id)
@@ -854,9 +857,6 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
                     stream_file_start_times[stream_id] = current_time  # 스트림 시작 시간 기록
                 
                 frame_counts[stream_id] += 1
-                
-                # FFmpeg vsync cfr에 15fps 제어를 맡김 - 모든 프레임을 전달
-                current_time = time.time()
                 
                 # 첫 번째 프레임 로그
                 if last_save_time == 0:
@@ -941,8 +941,8 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
                         
                         if two_stage_enabled:
                             # 임시 파일명 (접두사 추가)
-                            temp_filename = f"{temp_prefix}{base_filename}"
-                            filepath = os.path.join(stream_dirs[stream_id], temp_filename)
+                            filename = f"{temp_prefix}{base_filename}"
+                            filepath = os.path.join(stream_dirs[stream_id], filename)
                         else:
                             # 일반 저장
                             filename = base_filename
@@ -1392,7 +1392,7 @@ def file_monitor_worker_process(file_move_queue, stats_dict, stop_event, ssd_pat
             
             def add_watch_recursive(path):
                 try:
-                    wd = inotify.add_watch(path, flags.MOVED_TO | flags.CREATE | flags.CLOSE_WRITE)
+                    wd = inotify.add_watch(path, flags.MOVED_FROM | flags.MOVED_TO | flags.CREATE | flags.CLOSE_WRITE)
                     watch_descriptors[wd] = path
                     logger.info(f"👁️ 감시 추가: {path}")
                     
@@ -1415,10 +1415,23 @@ def file_monitor_worker_process(file_move_queue, stats_dict, stop_event, ssd_pat
                     
                     for event in events:
                         try:
-                            if event.mask & (flags.MOVED_TO | flags.CREATE | flags.CLOSE_WRITE):
+                            if event.mask & (flags.MOVED_FROM | flags.MOVED_TO | flags.CREATE | flags.CLOSE_WRITE):
                                 if event.name:
                                     filepath = os.path.join(watch_descriptors.get(event.wd, ssd_path), event.name)
                                     filename = event.name
+                                    
+                                    # 디버깅: 모든 이벤트 로그
+                                    event_type = []
+                                    if event.mask & flags.MOVED_FROM:
+                                        event_type.append("MOVED_FROM")
+                                    if event.mask & flags.MOVED_TO:
+                                        event_type.append("MOVED_TO")
+                                    if event.mask & flags.CREATE:
+                                        event_type.append("CREATE")
+                                    if event.mask & flags.CLOSE_WRITE:
+                                        event_type.append("CLOSE_WRITE")
+                                    
+                                    logger.debug(f"👁️ 파일 이벤트 감지: {filename} - {', '.join(event_type)}")
                                     
                                     # 't_' 접두사가 없는 비디오 파일인지 확인
                                     if (not filename.startswith(temp_prefix) and 
