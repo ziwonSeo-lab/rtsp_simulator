@@ -595,10 +595,7 @@ def blur_worker_process(worker_id, blur_queue, save_queues, preview_queue, stats
                     current_time = work_item['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
                     
                     overlay_lines = [
-                        f"Frame: {frame_number:06d}",
-                        f"Time: {current_time}",
-                        f"GPS: {config.latitude:.4f}, {config.longitude:.4f}",
-                        f"Thread: {thread_id}"
+                        f"Ship: {config.ship_name}, Time: {current_time}, GPS: {config.latitude}, {config.longitude}"
                     ]
                     
                     # 반투명 배경 추가
@@ -755,6 +752,16 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
         temp_prefix = ""
         logger.info(f"   📂 일반 저장 모드")
     
+    # 시간 기반 디렉토리 구조 함수
+    def get_time_based_directory(timestamp):
+        """YYYY/MM/DD/HH 형식의 디렉토리 경로 생성"""
+        return os.path.join(
+            str(timestamp.year),
+            f"{timestamp.month:02d}",
+            f"{timestamp.day:02d}",
+            f"{timestamp.hour:02d}"
+        )
+    
     saved_count = 0
     video_writers = {}
     frame_counts = {}
@@ -846,15 +853,27 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
                 # FFmpeg vsync cfr에 15fps 제어를 맡김 - 모든 프레임을 전달
                 current_time = time.time()
                 
-                # 스트림별 디렉토리 생성
+                # 시간 기반 디렉토리 생성 (스트림별 구분 없음)
+                time_based_dir = get_time_based_directory(timestamp)
                 if stream_id not in stream_dirs:
-                    stream_dir = os.path.join(base_output_dir, stream_id)
+                    # 시간 기반 디렉토리 사용
+                    stream_dir = os.path.join(base_output_dir, time_based_dir)
                     os.makedirs(stream_dir, exist_ok=True)
                     stream_dirs[stream_id] = stream_dir
                     frame_counts[stream_id] = 0
                     file_counters[stream_id] = 0
                     video_frame_counts[stream_id] = 0
                     stream_file_start_times[stream_id] = current_time  # 스트림 시작 시간 기록
+                    logger.info(f"Worker {worker_id}: {stream_id} 시간 기반 디렉토리 생성 - {time_based_dir}")
+                else:
+                    # 시간이 바뀌었는지 확인하고 디렉토리 업데이트
+                    current_time_dir = get_time_based_directory(timestamp)
+                    if stream_dirs[stream_id] != os.path.join(base_output_dir, current_time_dir):
+                        # 시간이 바뀌었으므로 새 디렉토리로 변경
+                        new_stream_dir = os.path.join(base_output_dir, current_time_dir)
+                        os.makedirs(new_stream_dir, exist_ok=True)
+                        stream_dirs[stream_id] = new_stream_dir
+                        logger.info(f"Worker {worker_id}: {stream_id} 시간 변경으로 새 디렉토리 - {current_time_dir}")
                 
                 frame_counts[stream_id] += 1
                 
@@ -914,14 +933,22 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
                                     try:
                                         # 파일명에서 접두사 제거 (이름 변경) - 모니터가 이 이벤트를 감지함
                                         if os.path.exists(current_filepath):
+                                            logger.info(f"Stream {stream_id}: 임시 파일 이름 변경 시작 - {os.path.basename(current_filepath)} → {os.path.basename(final_temp_filepath)}")
                                             os.rename(current_filepath, final_temp_filepath)
-                                            logger.info(f"Stream {stream_id}: 임시 파일 이름 변경 완료 - {os.path.basename(final_temp_filepath)} (모니터가 감지 예정)")
+                                            logger.info(f"Stream {stream_id}: ✅ 임시 파일 이름 변경 완료 - {os.path.basename(final_temp_filepath)} (모니터가 감지 예정)")
+                                            
+                                            # 파일명 변경 후 짧은 대기 (inotify 이벤트 처리 시간 확보)
+                                            time.sleep(0.1)
                                         else:
                                             logger.warning(f"Stream {stream_id}: 임시 파일을 찾을 수 없음 - {current_filepath}")
                                     
                                     except Exception as rename_error:
                                         logger.error(f"Stream {stream_id}: 임시 파일 이름 변경 실패 - {rename_error}")
-                                
+                                elif two_stage_enabled:
+                                    logger.warning(f"Stream {stream_id}: 2단계 저장 활성화되었지만 파일 정보가 부족함")
+                                else:
+                                    logger.info(f"Stream {stream_id}: 일반 저장 모드 (2단계 저장 비활성화)")
+                        
                             except Exception as e:
                                 logger.error(f"Stream {stream_id}: 기존 writer 해제 오류 - {e}")
                             finally:
@@ -937,7 +964,7 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
                         timestamp_str = timestamp.strftime("%Y%m%d_%H%M%S")
                         
                         # 원본 비디오 파일명 (블러 비활성화 시)
-                        base_filename = f"{stream_id}_original_{timestamp_str}_part{file_counters[stream_id]:03d}.{config.container_format}"
+                        base_filename = f"{config.ship_name}_{stream_id}_{timestamp_str}.{config.container_format}"
                         
                         if two_stage_enabled:
                             # 임시 파일명 (접두사 추가)
@@ -1174,6 +1201,9 @@ def save_worker_process(worker_id, save_queue, stats_dict, stop_event, base_outp
                         if os.path.exists(current_filepath):
                             os.rename(current_filepath, final_temp_filepath)
                             logger.info(f"Stream {stream_id}: 종료 시 임시 파일 이름 변경 완료 - {os.path.basename(final_temp_filepath)} (모니터가 감지 예정)")
+                            
+                            # 파일명 변경 후 짧은 대기 (inotify 이벤트 처리 시간 확보)
+                            time.sleep(0.1)
                     
                     except Exception as rename_error:
                         logger.error(f"Stream {stream_id}: 종료 시 임시 파일 이름 변경 실패 - {rename_error}")
@@ -1193,8 +1223,68 @@ def file_move_worker_process(worker_id, file_move_queue, stats_dict, stop_event,
     logger.info(f"   🔧 워커 ID: {worker_id}")
     logger.info(f"   📂 SSD 경로: {ssd_path}")
     logger.info(f"   📁 HDD 경로: {hdd_path}")
+    logger.info(f"   🔄 2단계 저장 파일 이동 시작")
     
     moved_count = 0
+    
+    # 시간 기반 디렉토리 구조 함수
+    def get_time_based_directory_from_filename(filename):
+        """파일명에서 시간 정보를 추출하여 YYYY/MM/DD/HH 형식의 디렉토리 경로 생성"""
+        try:
+            # 파일명 형식: shipname_streamid_YYYYMMDD_HHMMSS.ext
+            logger.debug(f"Worker {worker_id}: 파일명 파싱 시작 - {filename}")
+            
+            # 확장자 제거
+            name_without_ext = os.path.splitext(filename)[0]
+            parts = name_without_ext.split('_')
+            
+            logger.debug(f"Worker {worker_id}: 파일명 파트 - {parts}")
+            
+            if len(parts) >= 4:  # shipname, streamid, YYYYMMDD, HHMMSS
+                # YYYYMMDD 부분 찾기 (4번째 파트)
+                date_str = None
+                for part in parts:
+                    if isinstance(part, str) and len(part) == 8 and part.isdigit():
+                        date_str = part
+                        logger.debug(f"Worker {worker_id}: 날짜 문자열 찾음 - {date_str}")
+                        break
+                if not date_str:
+                    logger.warning(f"Worker {worker_id}: 날짜 문자열을 찾을 수 없음 - {parts}")
+                    return None
+                
+                # HHMMSS 부분 찾기 (4번째 파트)
+                time_str = None
+                for part in parts:
+                    if isinstance(part, str) and len(part) == 6 and part.isdigit():
+                        time_str = part
+                        logger.debug(f"Worker {worker_id}: 시간 문자열 찾음 - {time_str}")
+                        break
+                else:
+                    logger.warning(f"Worker {worker_id}: 시간 문자열을 찾을 수 없음 - {parts}")
+                    return None
+                
+                # 시간 정보 파싱
+                year = int(date_str[:4])
+                month = int(date_str[4:6])
+                day = int(date_str[6:8])
+                hour = int(time_str[:2])
+                
+                time_dir = os.path.join(
+                    str(year),
+                    f"{month:02d}",
+                    f"{day:02d}",
+                    f"{hour:02d}"
+                )
+                
+                logger.info(f"Worker {worker_id}: 시간 기반 디렉토리 생성 성공 - {time_dir}")
+                return time_dir
+            else:
+                logger.warning(f"Worker {worker_id}: 파일명 파트가 부족함 - {parts}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Worker {worker_id}: 파일명에서 시간 정보 추출 실패 - {filename}: {e}")
+            return None
     
     try:
         # HDD 최종 저장 경로 생성
@@ -1203,6 +1293,7 @@ def file_move_worker_process(worker_id, file_move_queue, stats_dict, stop_event,
         while not stop_event.is_set() or not file_move_queue.empty():
             try:
                 move_item = file_move_queue.get(timeout=1.0)
+                logger.info(f"Worker {worker_id}: 파일 이동 작업 수신 - {move_item}")
                 
                 if not isinstance(move_item, dict):
                     logger.warning(f"Worker {worker_id}: 잘못된 move_item 형식 - {type(move_item)}")
@@ -1213,34 +1304,52 @@ def file_move_worker_process(worker_id, file_move_queue, stats_dict, stop_event,
                 final_filename = move_item['final_filename']
                 stream_id = move_item['stream_id']
                 
+                logger.info(f"Worker {worker_id}: 파일 이동 시작 - {final_filename} (스트림: {stream_id})")
+                
                 # 임시 파일이 존재하는지 확인
                 if not os.path.exists(temp_filepath):
                     logger.warning(f"Worker {worker_id}: 임시 파일이 존재하지 않음 - {temp_filepath}")
                     continue
                 
-                # HDD 스트림별 디렉토리 생성
-                hdd_stream_dir = os.path.join(hdd_path, stream_id)
-                os.makedirs(hdd_stream_dir, exist_ok=True)
-                
-                # 최종 파일 경로
-                final_filepath = os.path.join(hdd_stream_dir, final_filename)
+                # HDD 시간 기반 디렉토리 생성 (스트림별 구분 없음)
+                time_based_dir = get_time_based_directory_from_filename(final_filename)
+                if time_based_dir:
+                    hdd_time_dir = os.path.join(hdd_path, time_based_dir)
+                    os.makedirs(hdd_time_dir, exist_ok=True)
+                    
+                    # 최종 파일 경로
+                    final_filepath = os.path.join(hdd_time_dir, final_filename)
+                    logger.debug(f"Worker {worker_id}: 시간 기반 디렉토리 사용 - {time_based_dir}")
+                else:
+                    # 시간 정보 추출 실패 시 기본 경로 사용
+                    hdd_default_dir = os.path.join(hdd_path, "unknown_time")
+                    os.makedirs(hdd_default_dir, exist_ok=True)
+                    final_filepath = os.path.join(hdd_default_dir, final_filename)
+                    logger.warning(f"Worker {worker_id}: 시간 정보 추출 실패, 기본 디렉토리 사용 - {final_filename}")
                 
                 # 파일 이동 시도
                 try:
                     import shutil
+                    logger.info(f"Worker {worker_id}: 파일 이동 시작 - {temp_filepath} → {final_filepath}")
+                    
+                    # 파일 크기 확인
+                    if os.path.exists(temp_filepath):
+                        file_size = os.path.getsize(temp_filepath)
+                        logger.info(f"Worker {worker_id}: 이동할 파일 크기 - {file_size} bytes")
+                    
                     shutil.move(temp_filepath, final_filepath)
                     moved_count += 1
                     
                     # 통계 업데이트
                     stats_dict[f'{stream_id}_moved'] = stats_dict.get(f'{stream_id}_moved', 0) + 1
                     
-                    logger.info(f"Worker {worker_id}: 파일 이동 완료 - {final_filename}")
+                    logger.info(f"Worker {worker_id}: ✅ 파일 이동 완료 - {final_filename}")
                     
                     if moved_count % 10 == 0:
                         logger.info(f"Worker {worker_id}: {moved_count}개 파일 이동 완료, 큐: {file_move_queue.qsize()}")
                     
                 except Exception as move_error:
-                    logger.error(f"Worker {worker_id}: 파일 이동 실패 - {temp_filepath} → {final_filepath}")
+                    logger.error(f"Worker {worker_id}: ❌ 파일 이동 실패 - {temp_filepath} → {final_filepath}")
                     logger.error(f"Worker {worker_id}: 이동 오류: {move_error}")
                     
                     # 이동 실패 시 임시 파일 정리
@@ -1271,6 +1380,9 @@ def file_monitor_worker_process(file_move_queue, stats_dict, stop_event, ssd_pat
     logger.info(f"   🆔 프로세스 ID: {current_pid}")
     logger.info(f"   📂 모니터링 경로: {ssd_path}")
     logger.info(f"   🏷️ 임시 파일 접두사: {temp_prefix}")
+    logger.info(f"   🔄 2단계 저장 모니터링 시작")
+    logger.info(f"   📊 file_move_queue 존재: {file_move_queue is not None}")
+    logger.info(f"   🛑 stop_event 상태: {stop_event.is_set()}")
     
     detected_count = 0
     
@@ -1306,11 +1418,13 @@ def file_monitor_worker_process(file_move_queue, stats_dict, stop_event, ssd_pat
                 def on_moved(self, event):
                     # 파일 이름 변경 이벤트 (t_ 접두사 제거)
                     if not event.is_directory:
+                        logger.info(f"👁️ watchdog MOVED 이벤트 감지: {event.dest_path}")
                         self.monitor_worker.handle_file_event(event.dest_path, "MOVED_TO")
                 
                 def on_created(self, event):
                     # 새 파일 생성 이벤트
                     if not event.is_directory:
+                        logger.info(f"👁️ watchdog CREATED 이벤트 감지: {event.src_path}")
                         self.monitor_worker.handle_file_event(event.src_path, "CREATE")
             
             # 모니터 워커 클래스
@@ -1323,21 +1437,36 @@ def file_monitor_worker_process(file_move_queue, stats_dict, stop_event, ssd_pat
                     
                     try:
                         filename = os.path.basename(filepath)
+                        logger.info(f"👁️ 파일 이벤트 처리 시작: {filename} (타입: {event_type})")
                         
-                        # 't_' 접두사가 없는 비디오 파일인지 확인
-                        if (not filename.startswith(temp_prefix) and 
-                            filename.lower().endswith(('.mp4', '.mkv', '.avi', '.webm'))):
+                        # 비디오 파일인지 확인 (temp_prefix 제거 후 감지)
+                        if filename.lower().endswith(('.mp4', '.mkv', '.avi', '.webm')):
+                            logger.info(f"👁️ 비디오 파일 감지: {filename}")
                             
                             # 스트림 ID 추출
                             try:
-                                stream_id = filename.split('_')[0]
-                                if not stream_id.startswith('stream'):
+                                name_without_ext = os.path.splitext(filename)[0]
+                                parts = name_without_ext.split('_')
+                                logger.info(f"👁️ 파일명 파트 분석: {parts}")
+                                
+                                if len(parts) >= 2:
+                                    stream_id = parts[1]
+                                    if not stream_id.startswith('stream'):
+                                        logger.debug(f"👁️ 스트림 ID가 아님: {stream_id}")
+                                        return
+                                    logger.info(f"👁️ 스트림 ID 추출 성공: {stream_id}")
+                                else:
+                                    logger.warning(f"👁️ 파일명 파트 부족: {parts}")
                                     return
-                            except:
+                            except Exception as e:
+                                logger.error(f"👁️ 스트림 ID 추출 실패: {e}")
                                 return
                             
                             # 파일이 실제로 존재하고 접근 가능한지 확인
                             if os.path.exists(filepath) and os.access(filepath, os.R_OK):
+                                file_size = os.path.getsize(filepath)
+                                logger.info(f"👁️ 파일 존재 확인: {filename} (크기: {file_size} bytes)")
+                                
                                 # 약간의 대기 (파일 쓰기 완료 확인)
                                 time.sleep(0.5)
                                 
@@ -1363,6 +1492,12 @@ def file_monitor_worker_process(file_move_queue, stats_dict, stop_event, ssd_pat
                                             file_move_queue.put_nowait(move_item)
                                         except:
                                             pass
+                                else:
+                                    logger.warning(f"👁️ 파일이 사라짐: {filename}")
+                            else:
+                                logger.warning(f"👁️ 파일 접근 불가: {filename}")
+                        else:
+                            logger.debug(f"👁️ 비디오 파일이 아님: {filename}")
                     
                     except Exception as e:
                         logger.error(f"👁️ 파일 이벤트 처리 오류: {e}")
@@ -1406,6 +1541,9 @@ def file_monitor_worker_process(file_move_queue, stats_dict, stop_event, ssd_pat
             
             add_watch_recursive(ssd_path)
             
+            # 파일명 변경 추적을 위한 임시 저장소
+            moved_from_files = {}  # {cookie: (old_name, old_path)}
+            
             logger.info("👁️ inotify 파일 모니터링 시작됨")
             
             while not stop_event.is_set():
@@ -1413,42 +1551,72 @@ def file_monitor_worker_process(file_move_queue, stats_dict, stop_event, ssd_pat
                     # 1초 타임아웃으로 이벤트 읽기
                     events = inotify.read(timeout=1000)
                     
+                    # 이벤트가 있을 때만 로그 출력 (스팸 방지)
+                    if events:
+                        logger.info(f"👁️ 이벤트 읽기 결과: {len(events)}개 이벤트")
+                    
                     for event in events:
                         try:
-                            if event.mask & (flags.MOVED_FROM | flags.MOVED_TO | flags.CREATE | flags.CLOSE_WRITE):
-                                if event.name:
-                                    filepath = os.path.join(watch_descriptors.get(event.wd, ssd_path), event.name)
-                                    filename = event.name
+                            # 디버깅: 모든 이벤트 로그
+                            event_type = []
+                            if event.mask & flags.MOVED_FROM:
+                                event_type.append("MOVED_FROM")
+                            if event.mask & flags.MOVED_TO:
+                                event_type.append("MOVED_TO")
+                            if event.mask & flags.CREATE:
+                                event_type.append("CREATE")
+                            if event.mask & flags.CLOSE_WRITE:
+                                event_type.append("CLOSE_WRITE")
+                            
+                            logger.debug(f"👁️ 이벤트 감지: {event.name} - {', '.join(event_type)} (cookie: {event.cookie})")
+                            
+                            # 파일 이벤트만 처리
+                            if not event.name:
+                                continue
+                            
+                            filepath = os.path.join(watch_descriptors.get(event.wd, ssd_path), event.name)
+                            filename = event.name
+                            
+                            # MOVED_FROM 이벤트 처리 (파일명 변경 시작)
+                            if event.mask & flags.MOVED_FROM:
+                                moved_from_files[event.cookie] = (filename, filepath)
+                                logger.debug(f"👁️ MOVED_FROM 저장: {filename} (cookie: {event.cookie})")
+                                continue
+                            
+                            # MOVED_TO 이벤트 처리 (파일명 변경 완료)
+                            if event.mask & flags.MOVED_TO:
+                                if event.cookie in moved_from_files:
+                                    old_filename, old_filepath = moved_from_files[event.cookie]
+                                    logger.info(f"👁️ 파일명 변경 감지: {old_filename} → {filename}")
                                     
-                                    # 디버깅: 모든 이벤트 로그
-                                    event_type = []
-                                    if event.mask & flags.MOVED_FROM:
-                                        event_type.append("MOVED_FROM")
-                                    if event.mask & flags.MOVED_TO:
-                                        event_type.append("MOVED_TO")
-                                    if event.mask & flags.CREATE:
-                                        event_type.append("CREATE")
-                                    if event.mask & flags.CLOSE_WRITE:
-                                        event_type.append("CLOSE_WRITE")
-                                    
-                                    logger.debug(f"👁️ 파일 이벤트 감지: {filename} - {', '.join(event_type)}")
-                                    
-                                    # 't_' 접두사가 없는 비디오 파일인지 확인
-                                    if (not filename.startswith(temp_prefix) and 
-                                        filename.lower().endswith(('.mp4', '.mkv', '.avi', '.webm'))):
+                                    # temp_prefix가 제거된 파일인지 확인
+                                    if not filename.startswith(temp_prefix) and old_filename.startswith(temp_prefix):
+                                        logger.info(f"👁️ 임시 파일명 변경 감지: {old_filename} → {filename}")
                                         
                                         # 스트림 ID 추출
                                         try:
-                                            stream_id = filename.split('_')[0]
-                                            if not stream_id.startswith('stream'):
+                                            name_without_ext = os.path.splitext(filename)[0]
+                                            parts = name_without_ext.split('_')
+                                            if len(parts) >= 2:
+                                                stream_id = parts[1]
+                                                if not stream_id.startswith('stream'):
+                                                    logger.debug(f"👁️ 스트림 ID가 아님: {stream_id}")
+                                                    del moved_from_files[event.cookie]
+                                                    continue
+                                                logger.info(f"👁️ 스트림 ID 추출 성공: {stream_id}")
+                                            else:
+                                                logger.warning(f"👁️ 파일명 파트 부족: {parts}")
+                                                del moved_from_files[event.cookie]
                                                 continue
-                                        except:
+                                        except Exception as e:
+                                            logger.error(f"👁️ 스트림 ID 추출 실패: {e}")
+                                            del moved_from_files[event.cookie]
                                             continue
                                         
                                         # 파일이 실제로 존재하고 접근 가능한지 확인
                                         if os.path.exists(filepath) and os.access(filepath, os.R_OK):
                                             # 약간의 대기 (파일 쓰기 완료 확인)
-                                            time.sleep(0.1)
+                                            time.sleep(0.2)
                                             
                                             if os.path.exists(filepath):
                                                 move_item = {
@@ -1472,6 +1640,71 @@ def file_monitor_worker_process(file_move_queue, stats_dict, stop_event, ssd_pat
                                                         file_move_queue.put_nowait(move_item)
                                                     except:
                                                         pass
+                                        
+                                        # 처리 완료된 cookie 제거
+                                        del moved_from_files[event.cookie]
+                                    else:
+                                        logger.debug(f"👁️ 일반 파일명 변경 (임시 파일 아님): {old_filename} → {filename}")
+                                        del moved_from_files[event.cookie]
+                                else:
+                                    logger.warning(f"👁️ MOVED_TO 이벤트에 대응하는 MOVED_FROM을 찾을 수 없음 (cookie: {event.cookie})")
+                                continue
+                            
+                            # CREATE 또는 CLOSE_WRITE 이벤트 처리 (새 파일 생성)
+                            if event.mask & (flags.CREATE | flags.CLOSE_WRITE):
+                                # 비디오 파일인지 확인
+                                if filename.lower().endswith(('.mp4', '.mkv', '.avi', '.webm')):
+                                    logger.debug(f"👁️ 비디오 파일 감지: {filename}")
+                                    
+                                    # temp_prefix가 있는 파일은 무시 (아직 임시 파일)
+                                    if filename.startswith(temp_prefix):
+                                        logger.debug(f"👁️ 임시 파일 무시: {filename}")
+                                        continue
+                                    
+                                    # 스트림 ID 추출
+                                    try:
+                                        name_without_ext = os.path.splitext(filename)[0]
+                                        parts = name_without_ext.split('_')
+                                        if len(parts) >= 2:
+                                            stream_id = parts[1]
+                                            if not stream_id.startswith('stream'):
+                                                logger.debug(f"👁️ 스트림 ID가 아님: {stream_id}")
+                                                continue
+                                            logger.debug(f"👁️ 스트림 ID 추출 성공: {stream_id}")
+                                        else:
+                                            logger.debug(f"👁️ 파일명 파트 부족: {parts}")
+                                            continue
+                                    except Exception as e:
+                                        logger.debug(f"👁️ 스트림 ID 추출 실패: {e}")
+                                        continue
+                                    
+                                    # 파일이 실제로 존재하고 접근 가능한지 확인
+                                    if os.path.exists(filepath) and os.access(filepath, os.R_OK):
+                                        # 약간의 대기 (파일 쓰기 완료 확인)
+                                        time.sleep(0.1)
+                                        
+                                        if os.path.exists(filepath):
+                                            move_item = {
+                                                'temp_filepath': filepath,
+                                                'final_filename': filename,
+                                                'stream_id': stream_id
+                                            }
+                                            
+                                            try:
+                                                file_move_queue.put_nowait(move_item)
+                                                detected_count += 1
+                                                logger.info(f"📁 파일 감지됨: {filename} (총 {detected_count}개)")
+                                                
+                                                if detected_count % 10 == 0:
+                                                    logger.info(f"👁️ 모니터: {detected_count}개 파일 감지, 이동큐: {file_move_queue.qsize()}")
+                                                
+                                            except queue.Full:
+                                                logger.warning(f"👁️ 파일 이동 큐가 가득참 - {filename}")
+                                                try:
+                                                    file_move_queue.get_nowait()
+                                                    file_move_queue.put_nowait(move_item)
+                                                except:
+                                                    pass
                         
                         except Exception as e:
                             logger.error(f"👁️ 이벤트 처리 오류: {e}")

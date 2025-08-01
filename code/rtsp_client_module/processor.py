@@ -214,9 +214,31 @@ class SharedPoolRTSPProcessor:
                 logger.info(f"💾 저장 워커 시작: {stream_id} 전용 (PID: {proc.pid})")
         
         # 2단계 저장 워커들 시작 (파일 모니터 + 파일 이동)
-        if (hasattr(self.config, 'two_stage_storage') and self.config.two_stage_storage and 
-            self.file_move_queue is not None):
-            logger.info("-" * 40)
+        logger.info("-" * 40)
+        logger.info("🔍 2단계 저장 시스템 상태 확인")
+
+        # 조건 확인을 더 자세히
+        condition1 = hasattr(self.config, 'two_stage_storage')
+        condition2 = self.config.two_stage_storage if condition1 else False
+        condition3 = self.file_move_queue is not None
+        
+        if condition1 and condition2 and condition3:
+            
+            # 디렉토리 생성
+            ssd_path = getattr(self.config, 'ssd_temp_path', './output/temp')
+            hdd_path = getattr(self.config, 'hdd_final_path', './output/final')
+            
+            try:
+                os.makedirs(ssd_path, exist_ok=True)
+                logger.info(f"   ✅ SSD 디렉토리 생성/확인: {ssd_path}")
+            except Exception as e:
+                logger.error(f"   ❌ SSD 디렉토리 생성 실패: {e}")
+            
+            try:
+                os.makedirs(hdd_path, exist_ok=True)
+                logger.info(f"   ✅ HDD 디렉토리 생성/확인: {hdd_path}")
+            except Exception as e:
+                logger.error(f"   ❌ HDD 디렉토리 생성 실패: {e}")
             
             # 파일 모니터 워커 시작 (1개만 필요)
             monitor_proc = Process(
@@ -241,6 +263,14 @@ class SharedPoolRTSPProcessor:
                 proc.start()
                 self.file_move_processes.append(proc)
                 logger.info(f"🚛 파일 이동 워커 시작: Worker {i+1} (PID: {proc.pid})")
+        else:
+            logger.warning("❌ 2단계 저장 조건 미충족 - 워커 시작 안함")
+            if not condition1:
+                logger.warning("   - two_stage_storage 속성이 없음")
+            elif not condition2:
+                logger.warning("   - two_stage_storage가 False")
+            elif not condition3:
+                logger.warning("   - file_move_queue가 None")
         
         total = (len(self.capture_processes) + len(self.blur_processes) + 
                 len(self.save_processes) + len(self.file_move_processes) + 

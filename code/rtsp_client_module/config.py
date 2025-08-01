@@ -83,8 +83,8 @@ class RTSPConfig:
     
     # 오버레이 설정
     overlay_enabled: bool = True
-    latitude: float = 37.5665
-    longitude: float = 126.9780
+    latitude: str = "N 37d33'59.4\""
+    longitude: str = "E 126d58'40.8\""
     
     # 기타 설정
     preview_enabled: bool = True
@@ -99,12 +99,14 @@ class RTSPConfig:
     blur_interval: int = 3  # 몇 프레임마다 블러 처리할지 (1 = 모든 프레임, 2 = 2프레임마다, 3 = 3프레임마다...)
 
     # 2단계 저장 시스템 설정
-    two_stage_storage: bool = False  # 2단계 저장 활성화/비활성화
+    two_stage_storage: bool = True  # 2단계 저장 활성화/비활성화 (기본값: True로 변경)
     ssd_temp_path: str = "./output/temp"  # SSD 임시 저장 경로
-    hdd_final_path: str = "/mnt/raid5"  # HDD 최종 저장 경로
+    hdd_final_path: str = "./output/final"  # HDD 최종 저장 경로 (더 안전한 경로로 변경)
     file_move_workers: int = 2  # 파일 이동 워커 수
     file_move_queue_size: int = 100  # 파일 이동 큐 크기
     temp_file_prefix: str = "t_"  # 임시 파일 접두사
+
+    ship_name: str = "testShip"
 
 if __name__ == "__main__":
     print(get_env_value("BLUR_MODULE_PATH", None))
