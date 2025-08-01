@@ -31,6 +31,27 @@ def get_env_value(key: str, default_value, value_type=str):
         return default_value
 
 
+def resolve_path(path: str) -> str:
+    """상대 경로를 절대 경로로 변환하는 헬퍼 함수"""
+    if path is None:
+        return None
+    
+    if os.path.isabs(path):
+        return path
+    
+    # 프로젝트 루트 디렉토리 찾기 (현재 파일 기준으로 2단계 위)
+    current_dir = os.path.dirname(os.path.abspath(__file__))  # rtsp_client_module
+    code_dir = os.path.dirname(current_dir)  # code
+    project_root = os.path.dirname(code_dir)  # rtsp_simulator
+    
+    # ./ 제거하고 절대 경로 생성
+    clean_path = path.lstrip('./')
+    absolute_path = os.path.join(project_root, clean_path)
+    normalized_path = os.path.normpath(absolute_path)
+    logger.info(f"경로 변환: {path} -> {normalized_path}")
+    return normalized_path
+
+
 @dataclass
 class RTSPConfig:
     """RTSP 처리 설정 클래스"""
@@ -42,15 +63,16 @@ class RTSPConfig:
         "rtsp://10.2.10.158:1115/live",
         "rtsp://10.2.10.158:1116/live"
     ])
-    thread_count: int = get_env_value('DEFAULT_THREAD_COUNT', 6, int)
-    blur_workers: int = 3
-    save_workers: int = 3  # 12에서 3으로 줄임 (스트림별 15fps 제어가 있으므로)
+    thread_count: int = get_env_value('DEFAULT_THREAD_COUNT', 6, int)  # 입력 스트림 개수 (고정)
+    capture_workers: int = 6  # 공유 캐처 워커: 2개 워커가 6개 스트림 순환 처리
+    blur_workers: int = 2  # 공유 블러 워커: 2개 워커가 6개 스트림 처리
+    save_workers: int = 2  # 공유 저장 워커: 2개 워커가 6개 스트림 처리
     max_duration_seconds: Optional[int] = None
     frame_loss_rate: float = 0.0
     reconnect_interval: int = 5
     connection_timeout: int = 10
     enable_processing: bool = True
-    blur_module_path: Optional[str] = get_env_value('BLUR_MODULE_PATH', "/home/szw001/development/2025/IUU/rtsp_simulator/blur_module/ipcamera_blur.py")
+    blur_module_path: Optional[str] = resolve_path(get_env_value('BLUR_MODULE_PATH', "./blur_module/ipcamera_blur.py"))
     save_enabled: bool = True
     save_path: str = "./output/"
     save_interval: int = 300  # 프레임 단위 (20초 × 15fps = 300프레임)
@@ -58,8 +80,8 @@ class RTSPConfig:
     save_format: str = "mp4"
     input_fps: float = 15.0
     force_fps: bool = True
-    blur_queue_size: int = 30      # 버벅임 방지를 위해 큐 크기 축소
-    save_queue_size: int = 300      # 저장 지연 최소화
+    blur_queue_size: int = 1000     # 버벅임 방지를 위해 큐 크기 축소
+    save_queue_size: int = 1000      # 저장 지연 최소화
     preview_queue_size: int = 10   # 미리보기 지연 최소화
     processing_queue_size: int = 50 # 전체 처리 지연 최소화
     
@@ -88,7 +110,7 @@ class RTSPConfig:
     
     # 기타 설정
     preview_enabled: bool = True
-    blur_enabled: bool = False  # 블러 처리 비활성화 (버벅임 문제 해결을 위해)
+    blur_enabled: bool = True  # 블러 처리 활성화 (지속성 블러 테스트)
     high_performance_mode: bool = False
     
     # 저장 옵션 설정
@@ -96,7 +118,7 @@ class RTSPConfig:
     save_blurred_video: bool = True    # 블러 처리된 영상 저장
     
     # 블러 처리 간격 설정
-    blur_interval: int = 3  # 몇 프레임마다 블러 처리할지 (1 = 모든 프레임, 2 = 2프레임마다, 3 = 3프레임마다...)
+    blur_interval: int = 5  # 몇 프레임마다 블러 처리할지 (1 = 모든 프레임, 2 = 2프레임마다, 3 = 3프레임마다...)
 
     # 2단계 저장 시스템 설정
     two_stage_storage: bool = True  # 2단계 저장 활성화/비활성화 (기본값: True로 변경)

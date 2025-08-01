@@ -54,13 +54,13 @@ class SharedPoolRTSPProcessor:
         # 멀티프로세싱 요소들
         self.manager = Manager()
         
-        # 스트림별 독립적인 블러 큐 생성 (블러 지속성을 위해)
+        # 스트림별 블러 큐 생성 (공유 워커가 순환 처리)
         self.blur_queues = {}
         for thread_id in range(config.thread_count):
             stream_id = f"stream_{thread_id+1}"
             self.blur_queues[stream_id] = Queue(maxsize=config.blur_queue_size)
         
-        # 스트림별 독립적인 저장 큐 생성 (15fps 제어를 위해)
+        # 스트림별 저장 큐 생성 (공유 워커가 순환 처리)
         self.save_queues = {}
         for thread_id in range(config.thread_count):
             stream_id = f"stream_{thread_id+1}"
@@ -161,57 +161,55 @@ class SharedPoolRTSPProcessor:
         self.resource_monitor.start_monitoring()
         self.performance_profiler.start_profile("total_processing")
         
-        # 스레드별 캡처 프로세스 시작
+        # 공유 캡처 워커들 시작 (설정 개수만큼, 모든 스트림 순환 처리)
         logger.info("=" * 60)
         logger.info("🚀 프로세스 시작 - PID 정보 출력")
         logger.info("=" * 60)
         
-        for thread_id in range(self.config.thread_count):
-            source = self.get_source_for_thread(thread_id)
-            stream_id = f"stream_{thread_id+1}"
+        for i in range(self.config.capture_workers):
+            worker_id = f"capture_{i+1}"
             
             proc = Process(
                 target=rtsp_capture_process,
-                args=(source, stream_id, thread_id, self.blur_queues[stream_id], self.preview_queue, 
+                args=(worker_id, self.config.sources, self.blur_queues, self.preview_queue, 
                       self.stats_dict, self.stop_event, self.config),
-                name=f"Capture_{stream_id}"
+                name=f"CaptureWorker_{i+1}"
             )
             proc.start()
             self.capture_processes.append(proc)
             
-            logger.info(f"📹 캡처 프로세스 시작: {stream_id} (PID: {proc.pid}) - {source}")
+            logger.info(f"📹 캡처 워커 시작: Worker {i+1} - {len(self.config.sources)}개 스트림 순환 처리 (PID: {proc.pid})")
         
-        # 스트림별 전용 블러 처리 워커들 시작
+        # 공유 블러 워커들 시작 (설정 개수만큼, 모든 스트림 큐 순환 처리)
         logger.info("-" * 40)
-        for thread_id in range(self.config.thread_count):
-            stream_id = f"stream_{thread_id+1}"
-            worker_id = f"{stream_id}_blur"
+        for i in range(self.config.blur_workers):
+            worker_id = f"blur_{i+1}"
             
             proc = Process(
                 target=blur_worker_process,
-                args=(worker_id, self.blur_queues[stream_id], self.save_queues, self.preview_queue,
+                args=(worker_id, self.blur_queues, self.save_queues, self.preview_queue,
                       self.stats_dict, self.stop_event),
-                name=f"BlurWorker_{stream_id}"
+                name=f"BlurWorker_{i+1}"
             )
             proc.start()
             self.blur_processes.append(proc)
-            logger.info(f"🔍 블러 워커 시작: {stream_id} 전용 워커 (PID: {proc.pid})")
+            logger.info(f"🔍 블러 워커 시작: Worker {i+1} - {len(self.blur_queues)}개 스트림 큐 순환 처리 (PID: {proc.pid})")
         
-        # 저장 워커들 시작 (스트림별 전용 워커)
+        # 공유 저장 워커들 시작 (설정 개수만큼, 모든 스트림 큐 순환 처리)
         if self.config.save_enabled:
             logger.info("-" * 40)
-            for thread_id in range(self.config.thread_count):
-                stream_id = f"stream_{thread_id+1}"
+            for i in range(self.config.save_workers):
+                worker_id = f"save_{i+1}"
                 proc = Process(
                     target=save_worker_process,
-                    args=(thread_id+1, self.save_queues[stream_id], self.stats_dict, 
+                    args=(worker_id, self.save_queues, self.stats_dict, 
                           self.stop_event, self.config.save_path, self.config,
-                          self.shared_stream_last_save_times, self.stream_timing_lock, stream_id),
-                    name=f"SaveWorker_{stream_id}"
+                          self.shared_stream_last_save_times, self.stream_timing_lock),
+                    name=f"SaveWorker_{i+1}"
                 )
                 proc.start()
                 self.save_processes.append(proc)
-                logger.info(f"💾 저장 워커 시작: {stream_id} 전용 (PID: {proc.pid})")
+                logger.info(f"💾 저장 워커 시작: Worker {i+1} - {len(self.save_queues)}개 스트림 큐 순환 처리 (PID: {proc.pid})")
         
         # 2단계 저장 워커들 시작 (파일 모니터 + 파일 이동)
         logger.info("-" * 40)
@@ -276,10 +274,10 @@ class SharedPoolRTSPProcessor:
                 len(self.save_processes) + len(self.file_move_processes) + 
                 len(self.file_monitor_processes))
         logger.info("=" * 60)
-        logger.info(f"✅ 총 {total}개 프로세스 시작 완료")
-        logger.info(f"   📹 캡처: {len(self.capture_processes)}개")
-        logger.info(f"   🔍 블러: {len(self.blur_processes)}개")
-        logger.info(f"   💾 저장: {len(self.save_processes)}개")
+        logger.info(f"✅ 총 {total}개 프로세스 시작 완료 (공유 워커 아키텍처)")
+        logger.info(f"   📹 캡처: {len(self.capture_processes)}개 워커 → {self.config.thread_count}개 스트림")
+        logger.info(f"   🔍 블러: {len(self.blur_processes)}개 워커 → {len(self.blur_queues)}개 큐")
+        logger.info(f"   💾 저장: {len(self.save_processes)}개 워커 → {len(self.save_queues)}개 큐")
         logger.info(f"   👁️ 모니터: {len(self.file_monitor_processes)}개")
         logger.info(f"   🚛 이동: {len(self.file_move_processes)}개")
         logger.info("=" * 60)
@@ -367,7 +365,7 @@ class SharedPoolRTSPProcessor:
             'thread_count': self.config.thread_count,
             'queue_size': 0,
             'preview_queue_sizes': {0: self.preview_queue.qsize()},
-            'blur_queue_size': self.blur_queue.qsize(),
+            'blur_queue_size': sum(q.qsize() for q in self.blur_queues.values()),
             'save_queue_size': sum(q.qsize() for q in self.save_queues.values()),
             'file_move_queue_size': self.file_move_queue.qsize() if self.file_move_queue else 0,
             'connection_status': connection_status,
