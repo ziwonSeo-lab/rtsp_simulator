@@ -59,7 +59,7 @@ class RTSPConfig:
     input_fps: float = 15.0
     force_fps: bool = True
     blur_queue_size: int = 30      # 버벅임 방지를 위해 큐 크기 축소
-    save_queue_size: int = 50      # 저장 지연 최소화
+    save_queue_size: int = 300      # 저장 지연 최소화
     preview_queue_size: int = 10   # 미리보기 지연 최소화
     processing_queue_size: int = 50 # 전체 처리 지연 최소화
     
@@ -67,10 +67,10 @@ class RTSPConfig:
     video_codec: str = "libx264"
     audio_codec: str = "aac"
     compression_level: int = 18  # CRF 품질 (낮을수록 고화질, 18-23 권장)
-    quality_mode: str = "crf"  # CRF 모드로 변경 (더 나은 화질)
-    bitrate: str = "8M"  # 비트레이트 증가
-    max_bitrate: str = "12M"  # 최대 비트레이트 증가
-    buffer_size: str = "16M"  # 버퍼 크기 증가
+    quality_mode: str = "vbr"  # CRF 모드로 변경 (더 나은 화질)
+    bitrate: str = "3M"  # 비트레이트 증가
+    max_bitrate: str = "6M"  # 최대 비트레이트 증가
+    buffer_size: str = "10M"  # 버퍼 크기 증가
     keyframe_interval: int = 30  # 키프레임 간격 단축 (더 안정적)
     pixel_format: str = "yuv420p"
     container_format: str = "mp4"
