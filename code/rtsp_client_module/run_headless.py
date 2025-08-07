@@ -111,14 +111,6 @@ def parse_arguments():
                        action='store_true',
                        help='2단계 저장 활성화 (SSD → HDD)')
     
-    parser.add_argument('--ssd-temp-path', 
-                       default='./output/temp',
-                       help='SSD 임시 저장 경로 (기본값: ./output/temp)')
-    
-    parser.add_argument('--hdd-final-path', 
-                       default='/mnt/raid5',
-                       help='HDD 최종 저장 경로 (기본값: /mnt/raid5)')
-    
     parser.add_argument('--file-move-workers', 
                        type=int, 
                        default=2,
@@ -146,8 +138,6 @@ def create_config(args) -> RTSPConfig:
     
     # 2단계 저장 시스템 설정
     config.two_stage_storage = args.two_stage_storage
-    config.ssd_temp_path = args.ssd_temp_path
-    config.hdd_final_path = args.hdd_final_path
     config.file_move_workers = args.file_move_workers
     
     if args.duration > 0:
