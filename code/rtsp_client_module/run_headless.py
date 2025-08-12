@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env /home/koast-user/env-blur/bin/python3
 """
 RTSP 클라이언트 모듈 - 헤드리스(GUI 없음) 실행파일
 """
@@ -61,8 +61,8 @@ def parse_arguments():
     
     parser.add_argument('--threads', '-t', 
                        type=int, 
-                       default=2,
-                       help='스레드 수 (기본값: 2)')
+                       default=6,
+                       help='스레드 수 (기본값: 6)')
     
     parser.add_argument('--duration', '-d', 
                        type=int, 
@@ -79,13 +79,13 @@ def parse_arguments():
     
     parser.add_argument('--blur-workers', 
                        type=int, 
-                       default=1,
-                       help='블러 워커 수 (기본값: 1)')
+                       default=2,
+                       help='블러 워커 수 (기본값: 2)')
     
     parser.add_argument('--save-workers', 
                        type=int, 
-                       default=1,
-                       help='저장 워커 수 (기본값: 1)')
+                       default=2,
+                       help='저장 워커 수 (기본값: 2)')
     
     parser.add_argument('--log-level', 
                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
