@@ -58,83 +58,85 @@ class OverlayConfig:
 class FFmpegConfig:
     """15fps VBR 최적화 FFmpeg 설정"""
     
-    # 기본 코덱 설정
-    video_codec: str = "libx264"
-    compression_level: int = 6
-    quality_mode: str = "vbr"            # VBR 모드 (가변 비트레이트)
-    target_bitrate: str = "2M"           # 목표 비트레이트
-    min_bitrate: str = "1M"              # 최소 비트레이트
-    max_bitrate: str = "4M"              # 최대 비트레이트
+    # 기본 코덱 및 비트레이트 설정 (환경변수로 덮어쓰기 가능)
+    video_codec: str = get_env_value('FFMPEG_VIDEO_CODEC', "libx264")
+    compression_level: int = get_env_value('FFMPEG_COMPRESSION_LEVEL', 6, int)
+    quality_mode: str = get_env_value('FFMPEG_QUALITY_MODE', "vbr")      # vbr/cbr
+    target_bitrate: str = get_env_value('FFMPEG_TARGET_BITRATE', "2M")
+    min_bitrate: str = get_env_value('FFMPEG_MIN_BITRATE', "1M")
+    max_bitrate: str = get_env_value('FFMPEG_MAX_BITRATE', "4M")
     
-    # 15fps 최적화 설정
-    input_fps: float = 15.0              # 입력 FPS (고정)
-    output_fps: float = 15.0             # 출력 FPS (고정)
-    keyframe_interval: int = 45          # 3초마다 키프레임 (15fps * 3)
+    # FPS / GOP
+    input_fps: float = get_env_value('FFMPEG_INPUT_FPS', 15.0, float)
+    output_fps: float = get_env_value('FFMPEG_OUTPUT_FPS', 15.0, float)
+    keyframe_interval: int = get_env_value('FFMPEG_KEYINT', 45, int)  # 3초 @15fps
     
-    # 컨테이너 설정
-    container_format: str = "mp4"
-    pixel_format: str = "yuv420p"
+    # 컨테이너/픽셀 포맷
+    container_format: str = get_env_value('FFMPEG_CONTAINER', "mp4")
+    pixel_format: str = get_env_value('FFMPEG_PIXEL_FORMAT', "yuv420p")
     
-    # 성능 설정 (15fps 최적화)
-    preset: str = "medium"               # medium (VBR에 적합)
-    tune: str = "film"                   # film (일반 영상에 최적)
-    profile: str = "main"
-    level: str = "4.1"
+    # 성능 설정
+    preset: str = get_env_value('FFMPEG_PRESET', "medium")
+    tune: str = get_env_value('FFMPEG_TUNE', "film")
+    profile: str = get_env_value('FFMPEG_PROFILE', "main")
+    level: str = get_env_value('FFMPEG_LEVEL', "4.1")
     
-    # VBR 버퍼 설정
-    buffer_size: str = "4M"
+    # 버퍼/동기화/로그
+    buffer_size: str = get_env_value('FFMPEG_BUFFER_SIZE', "4M")
+    vsync_mode: str = get_env_value('FFMPEG_VSYNC', 'cfr')  # cfr/vfr/drop
+    loglevel: str = get_env_value('FFMPEG_LOGLEVEL', 'error')
     
     # 하드웨어 가속
-    hardware_acceleration: str = "none"  # none, nvidia, intel, amd
+    hardware_acceleration: str = get_env_value('FFMPEG_HWACCEL', "none")  # none,nvidia,intel,amd
     
     def get_ffmpeg_command(self, input_settings: Dict, output_file: str) -> List[str]:
         """15fps VBR 최적화 FFmpeg 명령어 생성"""
-        cmd = ['ffmpeg', '-y']
+        cmd = ['ffmpeg', '-y', '-hide_banner', '-loglevel', self.loglevel]
         
-        # 하드웨어 가속 (필요시)
+        # 하드웨어 가속 (필요시) - 입력이 rawvideo라 디코드 가속은 영향이 적지만, 향후 확장 고려
         if self.hardware_acceleration == "nvidia":
             cmd.extend(['-hwaccel', 'cuda'])
         elif self.hardware_acceleration == "intel":
             cmd.extend(['-hwaccel', 'qsv'])
         
-        # 입력 설정 (15fps 고정)
+        # 입력 설정
         cmd.extend([
             '-f', 'rawvideo',
             '-vcodec', 'rawvideo',
             '-s', f"{input_settings['width']}x{input_settings['height']}",
             '-pix_fmt', 'bgr24',
-            '-r', '15',  # 입력 15fps 고정
+            '-r', str(int(self.input_fps)),  # 입력 fps
             '-i', '-'
         ])
         
         # 비디오 코덱 설정
         cmd.extend(['-c:v', self.video_codec])
         
-        # VBR 품질 설정
+        # VBR/CBR 품질 설정
         cmd.extend([
-            '-b:v', self.target_bitrate,     # 목표 비트레이트
-            '-minrate', self.min_bitrate,    # 최소 비트레이트
-            '-maxrate', self.max_bitrate,    # 최대 비트레이트
-            '-bufsize', self.buffer_size     # 버퍼 크기
+            '-b:v', self.target_bitrate,
+            '-minrate', self.min_bitrate,
+            '-maxrate', self.max_bitrate,
+            '-bufsize', self.buffer_size
         ])
         
-        # 15fps 최적화 설정
+        # 출력 fps 및 품질
         cmd.extend([
-            '-r', '15',                      # 출력 15fps 고정
+            '-r', str(int(self.output_fps)),
             '-preset', self.preset,
             '-tune', self.tune,
             '-profile:v', self.profile,
             '-level', self.level,
-            '-g', str(self.keyframe_interval),  # GOP: 45프레임 (3초)
+            '-g', str(self.keyframe_interval),
             '-pix_fmt', self.pixel_format
         ])
         
-        # 15fps 최적화 추가 설정
+        # 공통 최적화
         cmd.extend([
             '-threads', '0',
             '-movflags', '+faststart',
             '-avoid_negative_ts', 'make_zero',
-            '-vsync', 'cfr'                  # 일정 프레임 레이트 유지
+            '-vsync', self.vsync_mode
         ])
         
         cmd.append(output_file)
@@ -169,6 +171,15 @@ class RTSPConfig:
     # 모니터링 설정
     enable_monitoring: bool = True                       # 리소스 모니터링 활성화
     monitoring_interval: float = 1.0                     # 모니터링 주기 (초)
+    
+    # API 설정
+    blackbox_enabled: bool = True                      # 블랙박스 API 사용 여부
+    blackbox_api_url: str = get_env_value('BLACKBOX_API_URL', 'http://localhost')
+    api_timeout: int = get_env_value('API_TIMEOUT', 5, int)
+    api_poll_interval: float = get_env_value('API_POLL_INTERVAL', 1.0, float)
+    
+    # 녹화 조건 설정
+    recording_speed_threshold: float = get_env_value('RECORDING_SPEED_THRESHOLD', 5, float)
     
     # 오버레이 설정
     overlay_config: OverlayConfig = None
@@ -215,7 +226,12 @@ class RTSPConfig:
             connection_timeout=get_env_value('CONNECTION_TIMEOUT', 10, int),
             reconnect_interval=get_env_value('RECONNECT_INTERVAL', 5, int),
             enable_monitoring=get_env_value('ENABLE_MONITORING', True, bool),
-            monitoring_interval=get_env_value('MONITORING_INTERVAL', 1.0, float)
+            monitoring_interval=get_env_value('MONITORING_INTERVAL', 1.0, float),
+            blackbox_enabled=get_env_value('BLACKBOX_ENABLED', True, bool),
+            blackbox_api_url=get_env_value('BLACKBOX_API_URL', 'http://localhost'),
+            api_timeout=get_env_value('API_TIMEOUT', 5, int),
+            api_poll_interval=get_env_value('API_POLL_INTERVAL', 1.0, float),
+            recording_speed_threshold=get_env_value('RECORDING_SPEED_THRESHOLD', 5.0, float)
         )
     
     def validate(self) -> bool:

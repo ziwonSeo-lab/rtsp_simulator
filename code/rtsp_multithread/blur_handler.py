@@ -13,7 +13,10 @@ import importlib.util
 import numpy as np
 from typing import Optional
 
-from .config import RTSPConfig
+try:
+    from .config import RTSPConfig
+except ImportError:
+    from config import RTSPConfig
 
 logger = logging.getLogger(__name__)
 

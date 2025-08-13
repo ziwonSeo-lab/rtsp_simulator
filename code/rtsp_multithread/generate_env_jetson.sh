@@ -1,33 +1,33 @@
 #!/bin/bash
 
-# 6개 RTSP 스트림용 .env 파일 자동 생성 스크립트
-# 사용법: ./generate_env.sh
+# Jetson Orin 전용 6개 RTSP 스트림용 .env 파일 자동 생성 스크립트
+# 사용법: ./generate_env_jetson.sh
 # RTSP URL: rtsp://10.2.10.158:1111-1116/live (스트림 1-6)
 
-echo "📝 6개 RTSP 스트림용 .env 파일 자동 생성"
-echo "========================================"
+echo "📝 Jetson Orin용 6개 RTSP 스트림 .env 파일 자동 생성"
+echo "=============================================="
 
 # 기본 설정
-BASE_IP="10.2.10.158"
-START_PORT=1111
-END_PORT=1116
+BASE_IP="${BASE_IP:-10.2.10.158}"
+START_PORT=${START_PORT:-1111}
+END_PORT=${END_PORT:-1116}
 VESSEL_NAME=${VESSEL_NAME:-vesselTest}
 
-# 비트레이트 설정
+# 비트레이트 설정 (Jetson 권장 기본값)
 TARGET_BITRATE=${TARGET_BITRATE:-5M}
 MIN_BITRATE=${MIN_BITRATE:-1M}
 MAX_BITRATE=${MAX_BITRATE:-10M}
 
-# 블러 모듈 설정
-export BLUR_MODULE_PATH=${BLUR_MODULE_PATH:-/home/koast-user/rtsp_simulator/blur_module/ipcamera_blur.py}
+# 블러 모듈 설정 (Jetson: koast 사용자 경로)
+export BLUR_MODULE_PATH=${BLUR_MODULE_PATH:-/home/koast/rtsp_simulator/blur_module/ipcamera_blur.py}
 export BLUR_ENABLED=${BLUR_ENABLED:-true}
 export BLUR_CONFIDENCE=${BLUR_CONFIDENCE:-0.5}
 
-# 출력 설정
+# 출력/영상 설정
 export TEMP_OUTPUT_PATH=${TEMP_OUTPUT_PATH:-./output/temp/}
 export FINAL_OUTPUT_PATH=${FINAL_OUTPUT_PATH:-/mnt/raid5}
 export DEFAULT_INPUT_FPS=${DEFAULT_INPUT_FPS:-15.0}
-export VIDEO_SEGMENT_DURATION=${VIDEO_SEGMENT_DURATION:-20} # 영상 길이 설정
+export VIDEO_SEGMENT_DURATION=${VIDEO_SEGMENT_DURATION:-20}
 export VIDEO_WIDTH=${VIDEO_WIDTH:-1920}
 export VIDEO_HEIGHT=${VIDEO_HEIGHT:-1080}
 export DEFAULT_LATITUDE=${DEFAULT_LATITUDE:-37.5665}
@@ -42,39 +42,60 @@ export MONITORING_INTERVAL=${MONITORING_INTERVAL:-1.0}
 export BLACKBOX_API_URL=${BLACKBOX_API_URL:-http://localhost}
 export API_TIMEOUT=${API_TIMEOUT:-5}
 export API_POLL_INTERVAL=${API_POLL_INTERVAL:-1.0}
-export BLACKBOX_ENABLED=${BLACKBOX_ENABLED:-true}
+export BLACKBOX_ENABLED=${BLACKBOX_ENABLED:-false}
 
 # 녹화 조건 설정
 export RECORDING_SPEED_THRESHOLD=${RECORDING_SPEED_THRESHOLD:-5.0}
+
+# Jetson용 RTSP/GStreamer 수신 최적화 설정
+export RTSP_USE_GSTREAMER=${RTSP_USE_GSTREAMER:-true}
+export RTSP_LATENCY_MS=${RTSP_LATENCY_MS:-100}
+export RTSP_PROTOCOLS=${RTSP_PROTOCOLS:-tcp}
+export RTSP_DROP=${RTSP_DROP:-true}
+export RTSP_SYNC=${RTSP_SYNC:-false}
+
+# FFmpeg Jetson 최적화 (rawvideo -> 하드웨어 인코딩 권장)
+# 기본: v4l2m2m (폭넓은 호환). NVENC 가능 시 아래 대안 주석 해제
+export FFMPEG_VIDEO_CODEC=${FFMPEG_VIDEO_CODEC:-h264_v4l2m2m}
+# 대안: NVENC 사용 (지원되는 ffmpeg 빌드에서만 동작)
+# export FFMPEG_VIDEO_CODEC=h264_nvenc
+export FFMPEG_INPUT_FPS=${FFMPEG_INPUT_FPS:-15}
+export FFMPEG_OUTPUT_FPS=${FFMPEG_OUTPUT_FPS:-15}
+export FFMPEG_PRESET=${FFMPEG_PRESET:-fast}
+export FFMPEG_TUNE=${FFMPEG_TUNE:-film}
+export FFMPEG_VSYNC=${FFMPEG_VSYNC:-drop}
+export FFMPEG_LOGLEVEL=${FFMPEG_LOGLEVEL:-error}
+# 비트레이트는 위 상단 값 재사용
+export FFMPEG_TARGET_BITRATE=$TARGET_BITRATE
+export FFMPEG_MIN_BITRATE=$MIN_BITRATE
+export FFMPEG_MAX_BITRATE=$MAX_BITRATE
 
 # 6개 스트림용 .env 파일 생성
 for i in {1..6}; do
     PORT=$((START_PORT + i - 1))
     RTSP_URL="rtsp://${BASE_IP}:${PORT}/live"
-    VESSEL_NAME="$VESSEL_NAME"
+    VESSEL_NAME_VALUE="$VESSEL_NAME"
     STREAM_NUMBER=$i
     ENV_FILE=".env.stream${i}"
-    
+
     echo ""
     echo "🔄 스트림 ${i} .env 파일 생성 중..."
     echo "   URL: $RTSP_URL"
-    echo "   선박명: $VESSEL_NAME"
+    echo "   선박명: $VESSEL_NAME_VALUE"
     echo "   파일: $ENV_FILE"
-    
 
-    
     # .env 파일 생성
     cat > "$ENV_FILE" << EOF
-# RTSP Multithread Processor 환경변수 설정 - 스트림 ${i}
+# RTSP Multithread Processor 환경변수 설정 - Jetson 스트림 ${i}
 # 자동 생성: $(date)
-# 생성 스크립트: generate_env.sh
+# 생성 스크립트: generate_env_jetson.sh
 # RTSP URL: $RTSP_URL
 
 # =============================================================================
 # 필수 설정 - 스트림 ${i}
 # =============================================================================
 RTSP_URL=$RTSP_URL
-VESSEL_NAME=$VESSEL_NAME
+VESSEL_NAME=$VESSEL_NAME_VALUE
 STREAM_NUMBER=$STREAM_NUMBER
 
 # =============================================================================
@@ -129,44 +150,46 @@ API_POLL_INTERVAL=$API_POLL_INTERVAL
 RECORDING_SPEED_THRESHOLD=$RECORDING_SPEED_THRESHOLD
 
 # =============================================================================
+# Jetson RTSP/GStreamer 수신 최적화
+# =============================================================================
+RTSP_USE_GSTREAMER=$RTSP_USE_GSTREAMER
+RTSP_LATENCY_MS=$RTSP_LATENCY_MS
+RTSP_PROTOCOLS=$RTSP_PROTOCOLS
+RTSP_DROP=$RTSP_DROP
+RTSP_SYNC=$RTSP_SYNC
+
+# =============================================================================
+# FFmpeg 인코딩 설정 (Jetson)
+# =============================================================================
+FFMPEG_VIDEO_CODEC=$FFMPEG_VIDEO_CODEC
+FFMPEG_INPUT_FPS=$FFMPEG_INPUT_FPS
+FFMPEG_OUTPUT_FPS=$FFMPEG_OUTPUT_FPS
+FFMPEG_PRESET=$FFMPEG_PRESET
+FFMPEG_TUNE=$FFMPEG_TUNE
+FFMPEG_VSYNC=$FFMPEG_VSYNC
+FFMPEG_LOGLEVEL=$FFMPEG_LOGLEVEL
+FFMPEG_TARGET_BITRATE=$TARGET_BITRATE
+FFMPEG_MIN_BITRATE=$MIN_BITRATE
+FFMPEG_MAX_BITRATE=$MAX_BITRATE
+
+# =============================================================================
 # 고급 설정 (필요시 주석 해제하여 사용)
 # =============================================================================
 # LOG_LEVEL=INFO
 # LOG_FILE=rtsp_processor_stream${i}.log
 # DEFAULT_MAX_DURATION=3600
-
-# FFmpeg 고급 설정
-# FFMPEG_PRESET=medium
-# FFMPEG_TUNE=film
-FFMPEG_TARGET_BITRATE=$TARGET_BITRATE
-FFMPEG_MIN_BITRATE=$MIN_BITRATE
-FFMPEG_MAX_BITRATE=$MAX_BITRATE
+# 하드웨어 가속 강제 (필요시): FFMPEG_HWACCEL=nvidia
 EOF
 
     echo "   ✅ $ENV_FILE 생성 완료"
+
 done
 
 # 출력 디렉토리 생성
 if [ ! -d "$TEMP_OUTPUT_PATH" ]; then
     mkdir -p "$TEMP_OUTPUT_PATH"
-    echo "📁 임시 출력 디렉토리 생성: $TEMP_OUTPUT_PATH"
+    echo "📁 출력 디렉토리 생성: $TEMP_OUTPUT_PATH"
 fi
-
-if [ ! -d "$FINAL_OUTPUT_PATH" ]; then
-    mkdir -p "$FINAL_OUTPUT_PATH"
-    echo "📁 최종 출력 디렉토리 생성: $FINAL_OUTPUT_PATH"
-fi
-
-echo ""
-echo "✅ 6개 스트림용 .env 파일 생성 완료!"
-echo ""
-echo "📄 생성된 파일들:"
-for i in {1..6}; do
-    PORT=$((START_PORT + i - 1))
-    ENV_FILE=".env.stream${i}"
-    FILE_SIZE=$(wc -c < "$ENV_FILE")
-    echo "   $ENV_FILE (${FILE_SIZE} bytes) - rtsp://${BASE_IP}:${PORT}/live"
-done
 
 # 블러 모듈 확인
 echo ""
@@ -176,21 +199,27 @@ else
     echo "블러 모듈: ⚠️  없음 - 기본 블러 사용 ($BLUR_MODULE_PATH)"
 fi
 
+# 요약 출력
 echo ""
-echo "📋 현재 설정:"
-echo "   선박명: vesselTest"
-echo "   비디오 저장 간격: ${VIDEO_SEGMENT_DURATION}초"
-echo "   해상도: ${VIDEO_WIDTH}x${VIDEO_HEIGHT}"
-echo "   타겟 비트레이트: $TARGET_BITRATE"
-echo "   최소 비트레이트: $MIN_BITRATE"
-echo "   최대 비트레이트: $MAX_BITRATE"
+echo "✅ Jetson .env 파일 생성 완료!"
+echo "📄 생성된 파일들:"
+for i in {1..6}; do
+    PORT=$((START_PORT + i - 1))
+    ENV_FILE=".env.stream${i}"
+    FILE_SIZE=$(wc -c < "$ENV_FILE")
+    echo "   $ENV_FILE (${FILE_SIZE} bytes) - rtsp://${BASE_IP}:${PORT}/live"
+done
 
 echo ""
-echo "💡 비트레이트 변경 방법:"
-echo "   환경변수 설정: TARGET_BITRATE=8M MIN_BITRATE=2M MAX_BITRATE=15M ./generate_env.sh"
-echo "   또는 스크립트 상단의 비트레이트 설정 부분 직접 수정"
+echo "📋 현재 설정(요약):"
+echo "   선박명: $VESSEL_NAME"
+echo "   비디오 저장 간격: ${VIDEO_SEGMENT_DURATION}초"
+echo "   해상도: ${VIDEO_WIDTH}x${VIDEO_HEIGHT}"
+echo "   타겟 비트레이트: $TARGET_BITRATE (min:$MIN_BITRATE / max:$MAX_BITRATE)"
+echo "   GStreamer: ${RTSP_USE_GSTREAMER} (latency:${RTSP_LATENCY_MS}ms protocols:${RTSP_PROTOCOLS})"
+echo "   FFmpeg 코덱: ${FFMPEG_VIDEO_CODEC} (vsync:${FFMPEG_VSYNC}, preset:${FFMPEG_PRESET})"
 
 echo ""
 echo "🚀 실행 준비 완료!"
-echo "   개별 실행: python3 run.py (해당 .env.streamX 파일을 .env로 복사 후)"
+echo "   개별 실행: cp .env.stream1 .env && python3 run.py"
 echo "   전체 실행: ./start_all_streams.sh" 

@@ -15,8 +15,12 @@ import numpy as np
 import cv2
 from datetime import datetime
 from typing import Optional
+from threading import Thread
 
-from .config import RTSPConfig, OverlayConfig, generate_filename
+try:
+    from .config import RTSPConfig, OverlayConfig, generate_filename
+except ImportError:
+    from config import RTSPConfig, OverlayConfig, generate_filename
 
 logger = logging.getLogger(__name__)
 
@@ -61,24 +65,26 @@ class EnhancedFFmpegVideoWriter:
             
             logger.info(f"FFmpeg 명령어: {' '.join(cmd)}")
             
+            # FFmpeg 표준출력/표준에러가 파이프를 가득 채워 블로킹되는 것을 방지
+            # stdout은 버리고(stderr는 파일로 기록) stdin은 라인버퍼링으로 유지
+            log_dir = self.config.temp_output_path if hasattr(self.config, 'temp_output_path') else '.'
+            os.makedirs(log_dir, exist_ok=True)
+            stderr_path = os.path.join(log_dir, 'ffmpeg_writer.stderr.log')
+            self._stderr_file = open(stderr_path, 'ab', buffering=0)
+
             self.process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=0
+                stdout=subprocess.DEVNULL,
+                stderr=self._stderr_file,
+                bufsize=1
             )
             
-            # 프로세스가 제대로 시작되었는지 확인
-            time.sleep(0.1)
-            
+            # 프로세스가 제대로 시작되었는지 확인 (즉시 실패만 감지)
             if self.process.poll() is not None:
                 # 프로세스가 이미 종료됨
                 try:
-                    stderr_output = self.process.stderr.read().decode('utf-8', errors='ignore')
                     logger.error(f"FFmpeg 프로세스 즉시 종료: 코드 {self.process.poll()}")
-                    if stderr_output:
-                        logger.error(f"FFmpeg stderr: {stderr_output}")
                 except:
                     pass
                 self.is_opened = False
@@ -127,7 +133,6 @@ class EnhancedFFmpegVideoWriter:
                 return False
             
             self.process.stdin.write(frame_bytes)
-            self.process.stdin.flush()
             self.frame_count += 1
             return True
             
@@ -153,6 +158,11 @@ class EnhancedFFmpegVideoWriter:
                 logger.error(f"FFmpeg 프로세스 종료 오류: {e}")
             finally:
                 self.process = None
+                try:
+                    if hasattr(self, '_stderr_file') and self._stderr_file:
+                        self._stderr_file.close()
+                except Exception:
+                    pass
         
         self.is_opened = False
     
@@ -175,13 +185,12 @@ class VideoWriterManager:
         
         # 출력 경로 확인
         os.makedirs(config.temp_output_path, exist_ok=True)
+        
+        # 비동기 finalize 스레드 보관
+        self.finalize_threads = []
     
     def start_new_video(self):
-        """새 영상 파일 시작"""
-        # 기존 비디오 완료 처리
-        if self.current_writer:
-            self.finalize_current_video()
-        
+        """새 영상 파일 시작 (선오픈/비동기 롤오버)"""
         timestamp = datetime.now()
         
         # 파일명 생성: {배이름}_{스트림번호}_{YYMMDD}_{HHMMSS}.mp4
@@ -190,39 +199,55 @@ class VideoWriterManager:
         # 임시 파일명: temp_{원본파일명}
         temp_filename = f"temp_{filename}"
         
-        self.current_temp_file = os.path.join(self.config.temp_output_path, temp_filename)
-        self.current_final_file = os.path.join(self.config.temp_output_path, filename)
+        new_temp_file = os.path.join(self.config.temp_output_path, temp_filename)
+        new_final_file = os.path.join(self.config.temp_output_path, filename)
         
-        logger.info(f"새 영상 파일 시작: {temp_filename}")
+        logger.info(f"새 영상 파일 준비: {temp_filename}")
         
         try:
-            # FFmpeg Writer 초기화
+            # FFmpeg Writer 선오픈
             width, height = self.config.target_resolution
             fps = self.config.input_fps
             
-            self.current_writer = EnhancedFFmpegVideoWriter(
-                self.current_temp_file, fps, width, height, self.config
+            new_writer = EnhancedFFmpegVideoWriter(
+                new_temp_file, fps, width, height, self.config
             )
             
-            if self.current_writer.isOpened():
-                self.frame_count = 0
-                self.video_start_time = time.time()
-                logger.info(f"영상 저장 시작: {temp_filename}")
-                return True
-            else:
-                logger.error("FFmpeg writer 초기화 실패")
-                self.current_writer = None
+            if not new_writer.isOpened():
+                logger.error("새 FFmpeg writer 초기화 실패")
                 return False
+            
+            # 이전 writer 비동기 finalize 준비
+            if self.current_writer:
+                old_writer = self.current_writer
+                old_temp = self.current_temp_file
+                old_final = self.current_final_file
+                old_start_time = self.video_start_time
+                old_frame_count = self.frame_count
                 
+                self._finalize_previous_writer_async(
+                    old_writer, old_temp, old_final, old_start_time, old_frame_count
+                )
+            
+            # 새 writer로 전환
+            self.current_writer = new_writer
+            self.current_temp_file = new_temp_file
+            self.current_final_file = new_final_file
+            self.frame_count = 0
+            self.video_start_time = time.time()
+            
+            logger.info(f"영상 저장 시작: {temp_filename}")
+            return True
+            
         except Exception as e:
             logger.error(f"영상 파일 시작 실패: {e}")
-            self.current_writer = None
             return False
     
     def write_frame(self, frame: np.ndarray) -> bool:
         """프레임 저장"""
-        # 첫 번째 프레임이거나 최대 시간 초과 시 새 파일 시작
+        # writer 없거나 닫혀 있거나 최대 시간 초과 시 새 파일 시작
         if (not self.current_writer or 
+            not self.current_writer.isOpened() or 
             (self.video_start_time and time.time() - self.video_start_time >= self.max_duration)):
             if not self.start_new_video():
                 return False
@@ -238,10 +263,45 @@ class VideoWriterManager:
                     logger.info(f"프레임 저장 중: {self.frame_count}프레임 ({elapsed:.1f}초)")
                 return True
             else:
-                logger.error("프레임 저장 실패")
+                # 첫 프레임(혹은 현재 프레임) 쓰기 실패 시 즉시 재오픈 후 1회 재시도
+                logger.warning("프레임 저장 실패 - writer 재오픈 후 재시도")
+                if not self.start_new_video():
+                    return False
+                if self.current_writer and self.current_writer.isOpened():
+                    retry = self.current_writer.write(frame)
+                    if retry:
+                        self.frame_count += 1
+                        if self.frame_count % 100 == 0:
+                            elapsed = time.time() - self.video_start_time if self.video_start_time else 0
+                            logger.info(f"프레임 저장 중: {self.frame_count}프레임 ({elapsed:.1f}초)")
+                        return True
+                logger.error("프레임 저장 실패 - 재시도도 실패")
                 return False
         
         return False
+    
+    def _finalize_previous_writer_async(self, writer: EnhancedFFmpegVideoWriter, temp_path: str, final_path: str, start_time: Optional[float], frame_count: int):
+        """이전 writer를 비동기로 종료하고 파일을 rename"""
+        def worker():
+            try:
+                if writer:
+                    writer.release()
+                if temp_path and os.path.exists(temp_path):
+                    os.rename(temp_path, final_path)
+                    file_size = os.path.getsize(final_path) / (1024 * 1024) if os.path.exists(final_path) else 0
+                    elapsed = time.time() - start_time if start_time else 0
+                    logger.info(f"영상 저장 완료: {os.path.basename(final_path)}")
+                    logger.info(f"  프레임 수: {frame_count}")
+                    logger.info(f"  영상 길이: {elapsed:.1f}초")
+                    logger.info(f"  파일 크기: {file_size:.1f}MB")
+                else:
+                    logger.error(f"임시 파일이 존재하지 않음(비동기): {temp_path}")
+            except Exception as e:
+                logger.error(f"영상 파일 비동기 완료 처리 오류: {e}")
+        
+        t = Thread(target=worker, daemon=True)
+        t.start()
+        self.finalize_threads.append(t)
     
     def finalize_current_video(self):
         """현재 영상 파일 완료 처리"""
@@ -289,6 +349,15 @@ class VideoWriterManager:
         
         # 현재 영상 완료
         self.finalize_current_video()
+        
+        # 비동기 finalize 스레드 대기
+        try:
+            for t in list(self.finalize_threads):
+                t.join(timeout=10)
+                if t.is_alive():
+                    logger.warning("비동기 finalize 스레드가 시간 내 종료되지 않음")
+        except Exception as e:
+            logger.warning(f"비동기 finalize 대기 중 오류: {e}")
         
         # 남은 임시 파일들 정리
         try:

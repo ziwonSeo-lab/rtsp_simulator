@@ -20,6 +20,7 @@ from .config import RTSPConfig
 from .stream_receiver import StreamReceiver
 from .frame_processor import FrameProcessor
 from .monitor import SystemMonitor
+from .blackbox_manager import BlackboxManager
 
 # 로깅 설정
 logging.basicConfig(
@@ -46,6 +47,7 @@ class RTSPProcessor:
         self.stream_receiver = StreamReceiver(config, self.frame_queue)
         self.frame_processor = FrameProcessor(config, self.frame_queue)
         self.monitor = SystemMonitor(config) if config.enable_monitoring else None
+        self.blackbox_manager = BlackboxManager(config) if config.blackbox_enabled else None
         
         # 상태 관리
         self.running = False
@@ -57,6 +59,10 @@ class RTSPProcessor:
         logger.info(f"  최종 경로: {config.final_output_path}")
         logger.info(f"  블러 모듈: {config.blur_module_path or '기본 블러'}")
         logger.info(f"  모니터링: {'활성화' if config.enable_monitoring else '비활성화'}")
+        logger.info(f"  블랙박스 사용: {'활성화' if config.blackbox_enabled else '비활성화'}")
+        if config.blackbox_enabled:
+            logger.info(f"  블랙박스 API: {config.blackbox_api_url}")
+        logger.info(f"  속도 임계값: {config.recording_speed_threshold} knots")
     
     def start(self):
         """처리 시작"""
@@ -72,6 +78,12 @@ class RTSPProcessor:
             # 설정 검증
             if not self.config.validate():
                 raise ValueError("설정 검증 실패")
+            
+            # 블랙박스 매니저 시작 및 연결 (활성화된 경우)
+            if self.blackbox_manager:
+                self.blackbox_manager.start()
+                self.frame_processor.set_blackbox_manager(self.blackbox_manager)
+                self.stream_receiver.set_blackbox_manager(self.blackbox_manager)
             
             # 모니터링 시작
             if self.monitor:
@@ -115,6 +127,10 @@ class RTSPProcessor:
                 if self.frame_processor.is_alive():
                     logger.warning("FrameProcessor 강제 종료")
             
+            # 블랙박스 매니저 중지
+            if self.blackbox_manager:
+                self.blackbox_manager.stop()
+            
             # 모니터링 중지
             if self.monitor:
                 self.monitor.stop_monitoring()
@@ -157,6 +173,10 @@ class RTSPProcessor:
             if current_stats:
                 stats['system_stats'] = current_stats.to_dict()
             stats['system_summary'] = self.monitor.get_summary_stats()
+        
+        # 블랙박스 통계
+        if self.blackbox_manager:
+            stats['blackbox'] = self.blackbox_manager.get_statistics()
         
         return stats
     
