@@ -23,12 +23,14 @@ from .monitor import SystemMonitor
 from .blackbox_manager import BlackboxManager
 
 # 로깅 설정
+# run.py에서 통합 로깅을 초기화하므로 여기서는 중복 파일 핸들러를 추가하지 않습니다.
+# 필요 시 환경변수 기반으로 레벨만 보정
+log_level = os.getenv('LOG_LEVEL', 'DEBUG').upper()
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, log_level, logging.DEBUG),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler('rtsp_processor.log', encoding='utf-8')
+        logging.StreamHandler(sys.stdout)
     ]
 )
 

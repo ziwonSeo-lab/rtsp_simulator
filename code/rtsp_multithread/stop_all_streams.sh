@@ -8,6 +8,9 @@ echo "========================================="
 
 BASE_SESSION_NAME="rtsp_stream"
 FILE_MOVER_SESSION="rtsp_file_mover"
+# 프로필 기반 설정 (sim/camera 등)
+PROFILE="${PROFILE:-sim}"
+ENV_BASE_DIR="$(cd "$(dirname "$0")" && pwd)/profiles/$PROFILE"
 
 # 실행 중인 세션 확인
 echo "📋 실행 중인 세션 확인..."
@@ -47,6 +50,45 @@ for i in {1..6}; do
     fi
 done
 
+# 저장 중이던 temp_ 파일 이름 변경 (finalize) 처리 - 파일 이동기가 아직 살아있는 동안 수행
+echo ""
+echo "📦 저장 중 파일 정리(이름 변경) 진행..."
+
+get_env_val() {
+	# 사용: get_env_val KEY FILE
+	local key="$1"; local file="$2"
+	local val
+	val=$(grep -E "^${key}=" "$file" 2>/dev/null | tail -n1 | cut -d= -f2-)
+	echo "$val"
+}
+
+for i in {1..6}; do
+	env_file="$ENV_BASE_DIR/.env.stream${i}"
+	[ -f "$env_file" ] || continue
+	# 경로 추출 (기본값 보정)
+	temp_output_path=$(get_env_val TEMP_OUTPUT_PATH "$env_file"); [ -n "$temp_output_path" ] || temp_output_path="./output/temp/"
+	# temp_ 파일만 대상
+	shopt -s nullglob
+	pending_files=("$temp_output_path"/temp_*.mp4)
+	shopt -u nullglob
+	if [ ${#pending_files[@]} -gt 0 ]; then
+		echo "   스트림 ${i}: $temp_output_path 내 temp_ 파일 처리 ${#pending_files[@]}개"
+		for f in "${pending_files[@]}"; do
+			base=$(basename "$f")
+			final_name="${base#temp_}"
+			if mv -f -- "$f" "$temp_output_path/$final_name"; then
+				echo "      ▶ ${base} → ${final_name}"
+			else
+				echo "      ⚠️  이름 변경 실패: ${base}"
+			fi
+		done
+	fi
+done
+
+# 파일 이동기(Watcher)가 변경을 처리할 시간 대기
+echo "   파일 이동기 처리 대기..."
+sleep 3
+
 echo ""
 echo "🧹 임시 파일 정리 중..."
 
@@ -84,7 +126,7 @@ if [ "$remaining_sessions" -gt 0 ]; then
     echo "   pkill -f 'run.py'  # Python 프로세스 강제 종료"
 else
     echo ""
-echo "✅ 모든 RTSP 스트림이 성공적으로 중지되었습니다!"
+    echo "✅ 모든 RTSP 스트림이 성공적으로 중지되었습니다!"
 fi
 
 echo ""

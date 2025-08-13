@@ -11,6 +11,12 @@ FILE_MOVER_SESSION="rtsp_file_mover"
 BASE_IP="10.2.10.158"
 START_PORT=1111
 
+# 스크립트/로그/프로필 경로
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOGS_DIR="$SCRIPT_DIR/logs"
+PROFILE="${PROFILE:-sim}"
+ENV_BASE_DIR="$SCRIPT_DIR/profiles/$PROFILE"
+
 # 현재 시간
 echo "확인 시간: $(date)"
 echo ""
@@ -36,8 +42,9 @@ for i in {1..6}; do
     session_name="${BASE_SESSION_NAME}${i}"
     port=$((START_PORT + i - 1))
     rtsp_url="rtsp://${BASE_IP}:${port}/live"
-    log_file="rtsp_stream${i}.log"
-    env_file=".env.stream${i}"
+    env_file="$ENV_BASE_DIR/.env.stream${i}"
+    current_date=$(date +%Y%m%d)
+    log_file="$LOGS_DIR/rtsp_stream${i}_${current_date}.log"
     
     echo ""
     echo "   📡 스트림 ${i} (포트 ${port}):"
@@ -52,9 +59,9 @@ for i in {1..6}; do
     
     # 설정 파일 상태
     if [ -f "$env_file" ]; then
-        echo "      설정: ✅ $env_file 존재"
+        echo "      설정: ✅ $env_file 존재 (PROFILE=$PROFILE)"
     else
-        echo "      설정: ❌ $env_file 없음"
+        echo "      설정: ❌ $env_file 없음 (PROFILE=$PROFILE)"
     fi
     
     # 로그 파일 상태
@@ -62,18 +69,18 @@ for i in {1..6}; do
         file_size=$(wc -c < "$log_file" 2>/dev/null || echo "0")
         line_count=$(wc -l < "$log_file" 2>/dev/null || echo "0")
         last_modified=$(stat -c %y "$log_file" 2>/dev/null || echo "알 수 없음")
-        echo "      로그: ✅ $log_file (${file_size} bytes, ${line_count} lines)"
+        echo "      로그: ✅ $(basename "$log_file") (${file_size} bytes, ${line_count} lines)"
         echo "            최종 수정: $last_modified"
         
         # 최근 로그 라인 확인 (에러 체크)
-        if [ -f "$log_file" ] && [ -s "$log_file" ]; then
+        if [ -s "$log_file" ]; then
             last_line=$(tail -n 1 "$log_file" 2>/dev/null || echo "")
             if echo "$last_line" | grep -i "error\|fail\|exception" > /dev/null; then
                 echo "      ⚠️  최근 에러 감지: $last_line"
             fi
         fi
     else
-        echo "      로그: ❌ $log_file 없음"
+        echo "      로그: ❌ $(basename "$log_file") 없음 (LOGS_DIR=$LOGS_DIR)"
     fi
 done
 
@@ -98,10 +105,12 @@ if command -v free &> /dev/null; then
     echo "   메모리 사용률: $memory_info"
 fi
 
-# 디스크 사용률 (현재 디렉토리)
-if command -v df &> /dev/null; then
-    disk_usage=$(df . | tail -1 | awk '{print $5}')
-    echo "   디스크 사용률: $disk_usage"
+# 디스크 사용률 (로그/출력 디렉토리)
+if command -v du &> /dev/null; then
+    if [ -d "$LOGS_DIR" ]; then
+        logs_size=$(du -sh "$LOGS_DIR" 2>/dev/null | awk '{print $1}')
+        echo "   로그 폴더 용량($LOGS_DIR): $logs_size"
+    fi
 fi
 
 echo ""
@@ -135,25 +144,12 @@ echo "🔧 빠른 액션:"
 echo "   전체 시작: ./start_all_streams.sh"
 echo "   전체 중지: ./stop_all_streams.sh"
 echo "   특정 세션 접속: screen -r rtsp_stream1 (1~6)"
-echo "   실시간 로그: tail -f rtsp_stream1.log (1~6)"
-echo "   세션에서 나가기: Ctrl+A, D"
-
-# 스트림별 개별 제어 (실행 중인 경우)
-if [ "$running_streams" -gt 0 ]; then
-    echo ""
-    echo "💡 개별 스트림 제어:"
-    for i in {1..6}; do
-        session_name="${BASE_SESSION_NAME}${i}"
-        if screen -list | grep -q "$session_name"; then
-            echo "   스트림 ${i} 접속: screen -r $session_name"
-        fi
-    done
-fi
+echo "   실시간 로그: tail -f \"$LOGS_DIR/rtsp_stream1_$(date +%Y%m%d).log\" (1~6)"
 
 # 파일 이동 서비스 제어
 if [ "$running_mover" -gt 0 ]; then
     echo ""
     echo "📦 파일 이동 서비스 제어:"
     echo "   접속: screen -r $FILE_MOVER_SESSION"
-    echo "   로그: tail -f file_mover.log"
+    echo "   로그: tail -f \"$LOGS_DIR/file_mover_$(date +%Y%m%d).log\""
 fi 

@@ -365,7 +365,7 @@ class SystemMonitor:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
             
-            logger.info(f"시스템 모니터링 통계 저장: {filepath}")
+            logger.debug(f"시스템 모니터링 통계 저장: {filepath}")
             
         except Exception as e:
             logger.error(f"통계 파일 저장 실패: {e}")

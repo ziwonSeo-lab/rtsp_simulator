@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 import threading
+from logging.handlers import TimedRotatingFileHandler
 
 try:
     from watchdog.observers import Observer
@@ -27,13 +28,33 @@ except ImportError:
 from config import get_env_value
 
 # 로깅 설정
+log_level_env = os.getenv('LOG_LEVEL', 'DEBUG').upper()
+log_file_env = os.getenv('LOG_FILE', 'file_mover.log')
+rotation_enabled = os.getenv('LOG_ROTATION', 'on').lower() in ('1','true','yes','on')
+rotate_interval = int(os.getenv('LOG_ROTATE_INTERVAL', '1'))  # 일 단위
+backup_count = int(os.getenv('LOG_BACKUP_COUNT', '7'))
+
+numeric_level = getattr(logging, log_level_env, logging.DEBUG)
+
+handlers = [logging.StreamHandler(sys.stdout)]
+log_to_file = os.getenv('PY_LOG_TO_FILE', 'on').lower() in ('1','true','yes','on')
+if log_to_file:
+	if rotation_enabled:
+		file_handler = TimedRotatingFileHandler(
+			log_file_env,
+			when='midnight',
+			interval=rotate_interval,
+			backupCount=backup_count,
+			encoding='utf-8'
+		)
+	else:
+		file_handler = logging.FileHandler(log_file_env, encoding='utf-8')
+	handlers.append(file_handler)
+
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('file_mover.log'),
-        logging.StreamHandler()
-    ]
+	level=numeric_level,
+	format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+	handlers=handlers
 )
 logger = logging.getLogger(__name__)
 
@@ -106,9 +127,9 @@ class VideoFileMoveHandler(FileSystemEventHandler):
             # 파일 이동
             final_file_path = final_dir / file_path.name
             
-            logger.info(f"📦 파일 이동 중...")
-            logger.info(f"  원본: {file_path}")
-            logger.info(f"  대상: {final_file_path}")
+            logger.debug(f"📦 파일 이동 중...")
+            logger.debug(f"  원본: {file_path}")
+            logger.debug(f"  대상: {final_file_path}")
             
             # 파일 이동 (shutil.move는 원자적 작업)
             shutil.move(str(file_path), str(final_file_path))

@@ -109,7 +109,7 @@ class BlackboxAPIClient:
 				recorded_date=recorded_date
 			)
 			
-			logger.info(f"블랙박스 데이터 수신 성공: speed={blackbox_data.speed}, "
+			logger.debug(f"블랙박스 데이터 수신 성공: speed={blackbox_data.speed}, "
 					   f"vessel={blackbox_data.vessel_name}, "
 					   f"position=({blackbox_data.latitude}, {blackbox_data.longitude})")
 			
@@ -159,7 +159,7 @@ class BlackboxAPIClient:
 			response = self.session.post(url, json=payload, timeout=self.timeout)
 			response.raise_for_status()
 			
-			logger.info(f"영상 정보 전송 성공: {video_data.file_name}")
+			logger.debug(f"영상 정보 전송 성공: {video_data.file_name}")
 			return True
 			
 		except requests.exceptions.Timeout:

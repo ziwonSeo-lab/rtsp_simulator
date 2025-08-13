@@ -143,7 +143,7 @@ class StreamReceiver(threading.Thread):
 			use_gst = os.getenv('RTSP_USE_GSTREAMER', 'false').lower() in ('1','true','yes','on')
 			if use_gst:
 				pipeline = self._build_gst_pipeline(self.config.rtsp_url)
-				logger.info("GStreamer 파이프라인 사용")
+				logger.debug("GStreamer 파이프라인 사용")
 				self.cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
 			else:
 				self.cap = cv2.VideoCapture(self.config.rtsp_url)

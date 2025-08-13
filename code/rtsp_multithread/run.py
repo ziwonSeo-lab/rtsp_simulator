@@ -15,6 +15,8 @@ import signal
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
+from logging.handlers import TimedRotatingFileHandler
+from datetime import datetime
 
 load_dotenv()
 # 패키지 경로 추가
@@ -22,19 +24,45 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 def setup_logging():
     """로깅 설정"""
-    log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
-    log_file = os.getenv('LOG_FILE', 'rtsp_processor.log')
+    log_level = os.getenv('LOG_LEVEL', 'DEBUG').upper()
+    # 로그 디렉터리 설정 (환경변수 LOG_DIR 우선, 없으면 SCRIPT_DIR/logs)
+    script_dir = Path(__file__).parent
+    default_logs_dir = os.getenv('LOG_DIR', str(script_dir / 'logs'))
+    Path(default_logs_dir).mkdir(parents=True, exist_ok=True)
+    # 기본 파일명을 날짜 포함으로 변경
+    default_log_file = str(Path(default_logs_dir) / f"rtsp_processor_{datetime.now().strftime('%Y%m%d')}.log")
+    log_file = os.getenv('LOG_FILE', default_log_file)
     
     # 로그 레벨 검증
-    numeric_level = getattr(logging, log_level, logging.INFO)
+    numeric_level = getattr(logging, log_level, logging.DEBUG)
+    
+    # 회전 설정 (기본: 자정마다 회전, 7개 이력 보관)
+    rotation_enabled = os.getenv('LOG_ROTATION', 'on').lower() in ('1', 'true', 'yes', 'on')
+    rotate_interval = int(os.getenv('LOG_ROTATE_INTERVAL', '1'))  # 일 단위 간격
+    backup_count = int(os.getenv('LOG_BACKUP_COUNT', '7'))
+    
+    handlers = [logging.StreamHandler(sys.stdout)]
+    # 콘솔은 LOG_LEVEL을 따름
+    handlers[0].setLevel(numeric_level)
+    
+    # 파일 핸들러는 WARNING 이상만 기록
+    if rotation_enabled:
+        file_handler = TimedRotatingFileHandler(
+            log_file,
+            when='midnight',
+            interval=rotate_interval,
+            backupCount=backup_count,
+            encoding='utf-8'
+        )
+    else:
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    file_handler.setLevel(logging.WARNING)
+    handlers.append(file_handler)
     
     logging.basicConfig(
-        level=numeric_level,
+        level=logging.DEBUG,  # 루트는 넉넉히 두고 개별 핸들러로 제어
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(log_file, encoding='utf-8')
-        ]
+        handlers=handlers
     )
     
     return logging.getLogger(__name__)
@@ -155,8 +183,8 @@ def main():
                     cpu_percent = sys_stats.get('cpu_percent', 0)
                     memory_percent = sys_stats.get('memory_percent', 0)
                     
-                    logger.info(f"📊 상태 - 수신:{recv_frames} 처리:{proc_frames} 저장:{saved_frames} 큐:{queue_size}")
-                    logger.info(f"🖥️  리소스 - CPU:{cpu_percent:.1f}% 메모리:{memory_percent:.1f}%")
+                    logger.debug(f"📊 상태 - 수신:{recv_frames} 처리:{proc_frames} 저장:{saved_frames} 큐:{queue_size}")
+                    logger.debug(f"🖥️  리소스 - CPU:{cpu_percent:.1f}% 메모리:{memory_percent:.1f}%")
                     
                     last_stats_time = current_time
                 

@@ -13,7 +13,7 @@ import logging
 import subprocess
 import numpy as np
 import cv2
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from threading import Thread
 
@@ -63,13 +63,24 @@ class EnhancedFFmpegVideoWriter:
             }
             cmd = self.config.ffmpeg_config.get_ffmpeg_command(input_settings, self.filepath)
             
-            logger.info(f"FFmpeg 명령어: {' '.join(cmd)}")
+            logger.debug(f"FFmpeg 명령어: {' '.join(cmd)}")
             
             # FFmpeg 표준출력/표준에러가 파이프를 가득 채워 블로킹되는 것을 방지
             # stdout은 버리고(stderr는 파일로 기록) stdin은 라인버퍼링으로 유지
             log_dir = self.config.temp_output_path if hasattr(self.config, 'temp_output_path') else '.'
+            # LOG_DIR 환경변수가 있으면 우선 사용 (공통 로그 폴더)
+            env_log_dir = os.getenv('LOG_DIR')
+            if env_log_dir:
+                log_dir = env_log_dir
             os.makedirs(log_dir, exist_ok=True)
-            stderr_path = os.path.join(log_dir, 'ffmpeg_writer.stderr.log')
+            # 날짜 및 스트림 번호를 포함한 stderr 로그 파일명
+            date_str = datetime.now().strftime('%Y%m%d')
+            try:
+                stream_number = self.config.overlay_config.stream_number
+            except Exception:
+                stream_number = 'unknown'
+            stderr_filename = f"ffmpeg_writer_stream{stream_number}_{date_str}.stderr.log"
+            stderr_path = os.path.join(log_dir, stderr_filename)
             self._stderr_file = open(stderr_path, 'ab', buffering=0)
 
             self.process = subprocess.Popen(
@@ -92,7 +103,7 @@ class EnhancedFFmpegVideoWriter:
             
             self.is_opened = True
             logger.info(f"FFmpeg 프로세스 시작됨: {self.filepath}")
-            logger.info(f"비디오 설정: {self.width}x{self.height} @ {self.fps}fps")
+            logger.debug(f"비디오 설정: {self.width}x{self.height} @ {self.fps}fps")
             
         except Exception as e:
             logger.error(f"FFmpeg 프로세스 시작 실패: {e}")
@@ -183,6 +194,12 @@ class VideoWriterManager:
         # 환경변수에서 비디오 저장 간격 설정 (기본값: 5분)
         self.max_duration = int(os.getenv('VIDEO_SEGMENT_DURATION', 60 * 5))
         
+        # 스케줄 기준 앵커 및 경계 관리 (드리프트 비누적)
+        self.anchor_wall_time: Optional[datetime] = None
+        self.anchor_monotonic: Optional[float] = None
+        self.segment_index: int = 0
+        self.next_boundary_monotonic: Optional[float] = None
+        
         # 출력 경로 확인
         os.makedirs(config.temp_output_path, exist_ok=True)
         
@@ -191,10 +208,19 @@ class VideoWriterManager:
     
     def start_new_video(self):
         """새 영상 파일 시작 (선오픈/비동기 롤오버)"""
-        timestamp = datetime.now()
+        timestamp_now = datetime.now()
+        # 최초 시작 시 앵커 설정
+        if self.anchor_wall_time is None:
+            self.anchor_wall_time = timestamp_now
+            self.anchor_monotonic = time.monotonic()
+            self.segment_index = 0
+            self.next_boundary_monotonic = self.anchor_monotonic + self.max_duration
+        
+        # 파일명 생성용 계획 시각(스케줄 기준)
+        planned_start_time = self.anchor_wall_time + timedelta(seconds=self.segment_index * self.max_duration)
         
         # 파일명 생성: {배이름}_{스트림번호}_{YYMMDD}_{HHMMSS}.mp4
-        filename = generate_filename(self.config.overlay_config, timestamp)
+        filename = generate_filename(self.config.overlay_config, planned_start_time)
         
         # 임시 파일명: temp_{원본파일명}
         temp_filename = f"temp_{filename}"
@@ -202,7 +228,7 @@ class VideoWriterManager:
         new_temp_file = os.path.join(self.config.temp_output_path, temp_filename)
         new_final_file = os.path.join(self.config.temp_output_path, filename)
         
-        logger.info(f"새 영상 파일 준비: {temp_filename}")
+        logger.info(f"새 영상 파일 준비: {temp_filename} (planned={planned_start_time.strftime('%Y-%m-%d %H:%M:%S')})")
         
         try:
             # FFmpeg Writer 선오픈
@@ -236,6 +262,11 @@ class VideoWriterManager:
             self.frame_count = 0
             self.video_start_time = time.time()
             
+            # 세그먼트 인덱스 증가 및 다음 경계(앵커 기준) 갱신
+            self.segment_index += 1
+            if self.anchor_monotonic is not None:
+                self.next_boundary_monotonic = self.anchor_monotonic + (self.segment_index * self.max_duration)
+            
             logger.info(f"영상 저장 시작: {temp_filename}")
             return True
             
@@ -245,12 +276,16 @@ class VideoWriterManager:
     
     def write_frame(self, frame: np.ndarray) -> bool:
         """프레임 저장"""
-        # writer 없거나 닫혀 있거나 최대 시간 초과 시 새 파일 시작
-        if (not self.current_writer or 
-            not self.current_writer.isOpened() or 
-            (self.video_start_time and time.time() - self.video_start_time >= self.max_duration)):
+        # writer 없거나 닫혀 있으면 새 파일 시작
+        if (not self.current_writer or not self.current_writer.isOpened()):
             if not self.start_new_video():
                 return False
+        else:
+            # 스케줄 기준 경계 도달 시 새 파일 시작 (드리프트 비누적)
+            now_mono = time.monotonic()
+            if self.next_boundary_monotonic is not None and now_mono >= self.next_boundary_monotonic:
+                if not self.start_new_video():
+                    return False
         
         # 프레임 저장
         if self.current_writer and self.current_writer.isOpened():
@@ -260,7 +295,7 @@ class VideoWriterManager:
                 # 100프레임마다 로그 출력
                 if self.frame_count % 100 == 0:
                     elapsed = time.time() - self.video_start_time if self.video_start_time else 0
-                    logger.info(f"프레임 저장 중: {self.frame_count}프레임 ({elapsed:.1f}초)")
+                    logger.debug(f"프레임 저장 중: {self.frame_count}프레임 ({elapsed:.1f}초)")
                 return True
             else:
                 # 첫 프레임(혹은 현재 프레임) 쓰기 실패 시 즉시 재오픈 후 1회 재시도
@@ -273,7 +308,7 @@ class VideoWriterManager:
                         self.frame_count += 1
                         if self.frame_count % 100 == 0:
                             elapsed = time.time() - self.video_start_time if self.video_start_time else 0
-                            logger.info(f"프레임 저장 중: {self.frame_count}프레임 ({elapsed:.1f}초)")
+                            logger.debug(f"프레임 저장 중: {self.frame_count}프레임 ({elapsed:.1f}초)")
                         return True
                 logger.error("프레임 저장 실패 - 재시도도 실패")
                 return False
@@ -366,7 +401,7 @@ class VideoWriterManager:
                     temp_path = os.path.join(self.config.temp_output_path, filename)
                     try:
                         os.remove(temp_path)
-                        logger.info(f"임시 파일 정리: {filename}")
+                        logger.debug(f"임시 파일 정리: {filename}")
                     except Exception as e:
                         logger.warning(f"임시 파일 정리 실패: {filename} - {e}")
         except Exception as e:

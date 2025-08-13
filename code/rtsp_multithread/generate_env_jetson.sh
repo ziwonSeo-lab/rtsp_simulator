@@ -175,8 +175,11 @@ FFMPEG_MAX_BITRATE=$MAX_BITRATE
 # =============================================================================
 # 고급 설정 (필요시 주석 해제하여 사용)
 # =============================================================================
-# LOG_LEVEL=INFO
+# LOG_LEVEL=DEBUG
 # LOG_FILE=rtsp_processor_stream${i}.log
+LOG_ROTATION=on
+LOG_ROTATE_INTERVAL=1
+LOG_BACKUP_COUNT=7
 # DEFAULT_MAX_DURATION=3600
 # 하드웨어 가속 강제 (필요시): FFMPEG_HWACCEL=nvidia
 EOF
