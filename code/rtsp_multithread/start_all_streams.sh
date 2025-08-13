@@ -15,6 +15,8 @@ PROFILE="${PROFILE:-sim}"
 ENV_BASE_DIR="$SCRIPT_DIR/profiles/$PROFILE"
 LOGS_DIR="$SCRIPT_DIR/logs"
 mkdir -p "$LOGS_DIR"
+# 현재 PROFILE 기록 (상태 스크립트가 자동 추적할 수 있도록)
+echo -n "$PROFILE" > "$LOGS_DIR/.current_profile"
 
 # 사전 확인
 echo "📋 사전 확인 중..."

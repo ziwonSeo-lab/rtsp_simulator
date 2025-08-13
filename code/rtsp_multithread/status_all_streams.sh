@@ -14,6 +14,10 @@ START_PORT=1111
 # 스크립트/로그/프로필 경로
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOGS_DIR="$SCRIPT_DIR/logs"
+# PROFILE 우선순위: env > logs/.current_profile > sim
+if [ -z "${PROFILE:-}" ] && [ -f "$LOGS_DIR/.current_profile" ]; then
+  PROFILE="$(cat "$LOGS_DIR/.current_profile" 2>/dev/null || echo sim)"
+fi
 PROFILE="${PROFILE:-sim}"
 ENV_BASE_DIR="$SCRIPT_DIR/profiles/$PROFILE"
 
