@@ -138,15 +138,7 @@ class StreamReceiver(threading.Thread):
 		try:
 			logger.info(f"RTSP 연결 시도: {self.config.rtsp_url}")
 			self.stats.connection_attempts += 1
-			
-			# OpenCV VideoCapture 생성 (옵션: GStreamer 사용)
-			use_gst = os.getenv('RTSP_USE_GSTREAMER', 'false').lower() in ('1','true','yes','on')
-			if use_gst:
-				pipeline = self._build_gst_pipeline(self.config.rtsp_url)
-				logger.debug("GStreamer 파이프라인 사용")
-				self.cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-			else:
-				self.cap = cv2.VideoCapture(self.config.rtsp_url)
+			self.cap = cv2.VideoCapture(self.config.rtsp_url)
 			
 			# 연결 설정 최적화 (일부 백엔드에서만 적용)
 			try:
@@ -243,21 +235,3 @@ class StreamReceiver(threading.Thread):
 		except Exception as e:
 			logger.error(f"스트림 정보 조회 오류: {e}")
 			return {} 
-
-	def _build_gst_pipeline(self, rtsp_url: str) -> str:
-		"""Jetson 최적화를 위한 GStreamer 파이프라인 생성"""
-		latency = int(os.getenv('RTSP_LATENCY_MS', '200'))
-		protocols = os.getenv('RTSP_PROTOCOLS', 'tcp')
-		drop = os.getenv('RTSP_DROP', 'true').lower() in ('1','true','yes','on')
-		sync = os.getenv('RTSP_SYNC', 'false').lower() in ('1','true','yes','on')
-		target_w, target_h = self.config.target_resolution
-		# nvv4l2decoder + nvvidconv로 하드웨어 디코드/리사이즈, appsink로 BGR 프레임 수신
-		drop_str = 'true' if drop else 'false'
-		sync_str = 'true' if sync else 'false'
-		pipeline = (
-			f"rtspsrc location={rtsp_url} latency={latency} protocols={protocols} ! "
-			f"rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! "
-			f"video/x-raw, width={target_w}, height={target_h}, format=BGRx ! "
-			f"videoconvert ! video/x-raw, format=BGR ! appsink drop={drop_str} max-buffers=1 sync={sync_str}"
-		)
-		return pipeline 

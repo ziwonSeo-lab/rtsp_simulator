@@ -25,7 +25,7 @@ export BLUR_CONFIDENCE=${BLUR_CONFIDENCE:-0.5}
 
 # 출력/영상 설정
 export TEMP_OUTPUT_PATH=${TEMP_OUTPUT_PATH:-./output/temp/}
-export FINAL_OUTPUT_PATH=${FINAL_OUTPUT_PATH:-/mnt/raid5}
+export FINAL_OUTPUT_PATH=${FINAL_OUTPUT_PATH:-/mnt/nas}
 export DEFAULT_INPUT_FPS=${DEFAULT_INPUT_FPS:-15.0}
 export VIDEO_SEGMENT_DURATION=${VIDEO_SEGMENT_DURATION:-20}
 export VIDEO_WIDTH=${VIDEO_WIDTH:-1920}
@@ -46,13 +46,6 @@ export BLACKBOX_ENABLED=${BLACKBOX_ENABLED:-false}
 
 # 녹화 조건 설정
 export RECORDING_SPEED_THRESHOLD=${RECORDING_SPEED_THRESHOLD:-5.0}
-
-# Jetson용 RTSP/GStreamer 수신 최적화 설정
-export RTSP_USE_GSTREAMER=${RTSP_USE_GSTREAMER:-true}
-export RTSP_LATENCY_MS=${RTSP_LATENCY_MS:-100}
-export RTSP_PROTOCOLS=${RTSP_PROTOCOLS:-tcp}
-export RTSP_DROP=${RTSP_DROP:-true}
-export RTSP_SYNC=${RTSP_SYNC:-false}
 
 # FFmpeg Jetson 최적화 (rawvideo -> 하드웨어 인코딩 권장)
 # 기본: v4l2m2m (폭넓은 호환). NVENC 가능 시 아래 대안 주석 해제
@@ -150,15 +143,6 @@ API_POLL_INTERVAL=$API_POLL_INTERVAL
 RECORDING_SPEED_THRESHOLD=$RECORDING_SPEED_THRESHOLD
 
 # =============================================================================
-# Jetson RTSP/GStreamer 수신 최적화
-# =============================================================================
-RTSP_USE_GSTREAMER=$RTSP_USE_GSTREAMER
-RTSP_LATENCY_MS=$RTSP_LATENCY_MS
-RTSP_PROTOCOLS=$RTSP_PROTOCOLS
-RTSP_DROP=$RTSP_DROP
-RTSP_SYNC=$RTSP_SYNC
-
-# =============================================================================
 # FFmpeg 인코딩 설정 (Jetson)
 # =============================================================================
 FFMPEG_VIDEO_CODEC=$FFMPEG_VIDEO_CODEC
@@ -219,7 +203,7 @@ echo "   선박명: $VESSEL_NAME"
 echo "   비디오 저장 간격: ${VIDEO_SEGMENT_DURATION}초"
 echo "   해상도: ${VIDEO_WIDTH}x${VIDEO_HEIGHT}"
 echo "   타겟 비트레이트: $TARGET_BITRATE (min:$MIN_BITRATE / max:$MAX_BITRATE)"
-echo "   GStreamer: ${RTSP_USE_GSTREAMER} (latency:${RTSP_LATENCY_MS}ms protocols:${RTSP_PROTOCOLS})"
+echo "   RTSP 수신: OpenCV 기본 백엔드"
 echo "   FFmpeg 코덱: ${FFMPEG_VIDEO_CODEC} (vsync:${FFMPEG_VSYNC}, preset:${FFMPEG_PRESET})"
 
 echo ""
