@@ -99,9 +99,9 @@ class BlackboxManager:
                         self._update_overlay_data(blackbox_data)
                         self._check_recording_condition(blackbox_data)
                     
-                    logger.debug(f"블랙박스 데이터 업데이트: "
-                               f"speed={blackbox_data.speed}, "
-                               f"vessel={blackbox_data.vessel_name}")
+                    # logger.debug(f"블랙박스 데이터 업데이트: "
+                    #            f"speed={blackbox_data.speed}, "
+                    #            f"vessel={blackbox_data.vessel_name}")
                 else:
                     consecutive_failures += 1
                     logger.warning(f"블랙박스 데이터 수신 실패 ({consecutive_failures}/{max_consecutive_failures})")
@@ -141,7 +141,7 @@ class BlackboxManager:
             timestamp=timestamp
         )
         
-        logger.debug(f"오버레이 데이터 업데이트: {vessel_name} @ {latitude},{longitude}")
+        # logger.debug(f"오버레이 데이터 업데이트: {vessel_name} @ {latitude},{longitude}")
     
     def _check_recording_condition(self, blackbox_data: BlackboxData):
         """녹화 조건 확인"""
@@ -154,8 +154,8 @@ class BlackboxManager:
         else:
             # 속도 기준으로 녹화 조건 판단
             new_recording_state = speed <= self.config.recording_speed_threshold
-            logger.debug(f"속도 {speed} knots, 임계값 {self.config.recording_speed_threshold}, "
-                        f"녹화 {'허용' if new_recording_state else '중단'}")
+            # logger.debug(f"속도 {speed} knots, 임계값 {self.config.recording_speed_threshold}, "
+            #             f"녹화 {'허용' if new_recording_state else '중단'}")
         
         # 녹화 상태가 변경된 경우 콜백 호출
         if new_recording_state != self.is_recording_allowed:

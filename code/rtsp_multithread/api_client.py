@@ -71,14 +71,14 @@ class BlackboxAPIClient:
 		url = f"{self.base_url}/api/blackbox-logs/latest-gps"
 		
 		try:
-			logger.debug(f"블랙박스 데이터 요청: {url}")
+			# logger.debug(f"블랙박스 데이터 요청: {url}")
 			response = self.session.get(url, timeout=self.timeout)
 			response.raise_for_status()
 			
 			data = response.json()
 			payload = data.get('payload', {})
 			
-			logger.debug(f"블랙박스 응답 데이터: {payload}")
+			# logger.debug(f"블랙박스 응답 데이터: {payload}")
 			
 			# recorded_date 파싱
 			recorded_date = None
@@ -109,9 +109,9 @@ class BlackboxAPIClient:
 				recorded_date=recorded_date
 			)
 			
-			logger.debug(f"블랙박스 데이터 수신 성공: speed={blackbox_data.speed}, "
-					   f"vessel={blackbox_data.vessel_name}, "
-					   f"position=({blackbox_data.latitude}, {blackbox_data.longitude})")
+			# logger.debug(f"블랙박스 데이터 수신 성공: speed={blackbox_data.speed}, "
+			# 		   f"vessel={blackbox_data.vessel_name}, "
+			# 		   f"position=({blackbox_data.latitude}, {blackbox_data.longitude})")
 			
 			return blackbox_data
 			
@@ -149,8 +149,8 @@ class BlackboxAPIClient:
 				"filePath": video_data.file_path,
 				"fileSize": video_data.file_size,  # 문자열
 				"fileExt": video_data.file_ext,
-				"recordStartTime": video_data.record_start_time.strftime("%Y-%m-%d %H:%M:%S"),
-				"recordEndTime": video_data.record_end_time.strftime("%Y-%m-%d %H:%M:%S")
+				"recordStartTime": video_data.record_start_time.isoformat(timespec='seconds'),
+				"recordEndTime": video_data.record_end_time.isoformat(timespec='seconds')
 			}
 			
 			logger.debug(f"영상 정보 전송: {url}")
@@ -191,14 +191,39 @@ def create_camera_video_data(
 	file_name: str,
 	record_start_time: datetime,
 	record_end_time: datetime,
-	blackbox_data: Optional[BlackboxData] = None
+	blackbox_data: Optional[BlackboxData] = None,
+	stream_number: Optional[int] = None
 ) -> CameraVideoData:
-	"""CameraVideoData 객체 생성 헬퍼 함수"""
+	"""CameraVideoData 객체 생성 헬퍼 함수
+	
+	카메라 ID/Name은 환경변수로 스트림별 설정 가능:
+	- CAMERA_ID_S{N}, CAMERA_NAME_S{N} (예: CAMERA_ID_S1, CAMERA_NAME_S1)
+	- 없음이면 CAMERA_ID, CAMERA_NAME 사용
+	- 모두 없으면 기본값: id=스트림번호, name=f"camera{스트림번호}"
+	(필요에 맞게 ENV를 설정해 사용하세요)
+	"""
 	
 	# 파일 정보 추출
 	file_size_int = os.path.getsize(file_path) if os.path.exists(file_path) else 0
 	file_size = str(file_size_int)
 	file_ext = os.path.splitext(file_name)[1].lstrip('.')
+	
+	# 스트림 번호 결정 (우선순위: 인자 -> ENV -> 1)
+	try:
+		stream_num = int(stream_number) if stream_number is not None else int(os.getenv('STREAM_NUMBER', '1'))
+	except ValueError:
+		stream_num = 1
+	
+	# ENV에서 카메라 ID/이름 읽기
+	env_cam_id = os.getenv(f'CAMERA_ID_S{stream_num}') or os.getenv('CAMERA_ID')
+	env_cam_name = os.getenv(f'CAMERA_NAME_S{stream_num}') or os.getenv('CAMERA_NAME')
+	
+	# 기본값: id=스트림 번호, name=camera{스트림 번호}
+	try:
+		camera_id = int(env_cam_id) if env_cam_id is not None and env_cam_id.strip() != '' else stream_num
+	except ValueError:
+		camera_id = stream_num
+	camera_name = env_cam_name if env_cam_name and env_cam_name.strip() != '' else f"camera{stream_num}"
 	
 	# 블랙박스 데이터가 있으면 사용, 없으면 기본값
 	if blackbox_data:
@@ -215,8 +240,8 @@ def create_camera_video_data(
 		gear_name_ko = "선망"
 	
 	return CameraVideoData(
-		camera_id=1,
-		camera_name="RTSP_Camera_01",
+		camera_id=camera_id,
+		camera_name=camera_name,
 		vessel_id=vessel_id,
 		vessel_name=vessel_name,
 		gear_code=gear_code,

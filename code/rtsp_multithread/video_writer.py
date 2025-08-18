@@ -22,6 +22,7 @@ try:
 except ImportError:
     from config import RTSPConfig, OverlayConfig, generate_filename
 
+
 logger = logging.getLogger(__name__)
 
 class EnhancedFFmpegVideoWriter:
@@ -51,6 +52,19 @@ class EnhancedFFmpegVideoWriter:
             return result.returncode == 0
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return False
+
+    def _resolve_log_dir(self) -> str:
+        """FFmpeg stderr 로그 디렉터리 결정: LOG_DIR > FINAL_OUTPUT_PATH/logs > TEMP_OUTPUT_PATH/logs > ."""
+        env_log_dir = os.getenv('LOG_DIR')
+        if env_log_dir:
+            return env_log_dir
+        final_output = getattr(self.config, 'final_output_path', None)
+        if final_output:
+            return os.path.join(final_output, 'logs')
+        temp_output = getattr(self.config, 'temp_output_path', None)
+        if temp_output:
+            return os.path.join(temp_output, 'logs')
+        return '.'
     
     def _start_ffmpeg(self):
         """FFmpeg 프로세스 시작"""
@@ -67,20 +81,18 @@ class EnhancedFFmpegVideoWriter:
             
             # FFmpeg 표준출력/표준에러가 파이프를 가득 채워 블로킹되는 것을 방지
             # stdout은 버리고(stderr는 파일로 기록) stdin은 라인버퍼링으로 유지
-            log_dir = self.config.temp_output_path if hasattr(self.config, 'temp_output_path') else '.'
-            # LOG_DIR 환경변수가 있으면 우선 사용 (공통 로그 폴더)
-            env_log_dir = os.getenv('LOG_DIR')
-            if env_log_dir:
-                log_dir = env_log_dir
-            os.makedirs(log_dir, exist_ok=True)
+            log_dir = self._resolve_log_dir()
             # 날짜 및 스트림 번호를 포함한 stderr 로그 파일명
             date_str = datetime.now().strftime('%Y%m%d')
+            y, m, d = date_str[:4], date_str[4:6], date_str[6:8]
+            dated_dir = os.path.join(log_dir, y, m, d)
+            os.makedirs(dated_dir, exist_ok=True)
             try:
                 stream_number = self.config.overlay_config.stream_number
             except Exception:
                 stream_number = 'unknown'
             stderr_filename = f"ffmpeg_writer_stream{stream_number}_{date_str}.stderr.log"
-            stderr_path = os.path.join(log_dir, stderr_filename)
+            stderr_path = os.path.join(dated_dir, stderr_filename)
             self._stderr_file = open(stderr_path, 'ab', buffering=0)
 
             self.process = subprocess.Popen(
@@ -199,12 +211,43 @@ class VideoWriterManager:
         self.anchor_monotonic: Optional[float] = None
         self.segment_index: int = 0
         self.next_boundary_monotonic: Optional[float] = None
+        # 현재 세그먼트의 계획 시작 시각 저장 (payload 용도)
+        self.current_segment_planned_start: Optional[datetime] = None
         
         # 출력 경로 확인
         os.makedirs(config.temp_output_path, exist_ok=True)
         
         # 비동기 finalize 스레드 보관
         self.finalize_threads = []
+        
+        # 세그먼트 이벤트 리스너 (예: SRT 자막 작성기)
+        self.segment_listeners = []
+        
+    def _duration_seconds_from_frames(self, frame_count: int) -> float:
+        """프레임 수를 기반으로 영상 길이(초)를 계산"""
+        fps = float(getattr(self.config, 'input_fps', 0)) or 0.0
+        if fps <= 0:
+            return 0.0
+        return frame_count / fps
+
+    def _log_segment_summary(self, file_path: str, frame_count: int, start_dt: Optional[datetime]):
+        """세그먼트 저장 요약 로그를 일관되게 출력"""
+        try:
+            file_size = os.path.getsize(file_path) / (1024 * 1024) if os.path.exists(file_path) else 0
+        except Exception:
+            file_size = 0
+        duration_sec = self._duration_seconds_from_frames(frame_count)
+        logger.info(f"영상 저장 완료: {os.path.basename(file_path)}")
+        logger.info(f"  프레임 수: {frame_count}")
+        logger.info(f"  영상 길이: {duration_sec:.1f}초")
+        logger.info(f"  파일 크기: {file_size:.1f}MB")
+
+    def add_segment_listener(self, listener):
+        """세그먼트 이벤트 리스너 등록 (on_segment_started, on_segment_finalizing 구현체)"""
+        try:
+            self.segment_listeners.append(listener)
+        except Exception as e:
+            logger.warning(f"세그먼트 리스너 등록 실패: {e}")
     
     def start_new_video(self):
         """새 영상 파일 시작 (선오픈/비동기 롤오버)"""
@@ -248,11 +291,11 @@ class VideoWriterManager:
                 old_writer = self.current_writer
                 old_temp = self.current_temp_file
                 old_final = self.current_final_file
-                old_start_time = self.video_start_time
+                old_start_dt = self.current_segment_planned_start
                 old_frame_count = self.frame_count
                 
                 self._finalize_previous_writer_async(
-                    old_writer, old_temp, old_final, old_start_time, old_frame_count
+                    old_writer, old_temp, old_final, old_start_dt, old_frame_count
                 )
             
             # 새 writer로 전환
@@ -261,6 +304,7 @@ class VideoWriterManager:
             self.current_final_file = new_final_file
             self.frame_count = 0
             self.video_start_time = time.time()
+            self.current_segment_planned_start = planned_start_time
             
             # 세그먼트 인덱스 증가 및 다음 경계(앵커 기준) 갱신
             self.segment_index += 1
@@ -268,6 +312,14 @@ class VideoWriterManager:
                 self.next_boundary_monotonic = self.anchor_monotonic + (self.segment_index * self.max_duration)
             
             logger.info(f"영상 저장 시작: {temp_filename}")
+            
+            # 세그먼트 시작 알림 (자막 등 동기화 목적)
+            for listener in list(self.segment_listeners):
+                try:
+                    listener.on_segment_started(new_temp_file, new_final_file, planned_start_time)
+                except Exception as e:
+                    logger.warning(f"Segment listener on_segment_started 오류: {e}")
+            
             return True
             
         except Exception as e:
@@ -289,6 +341,7 @@ class VideoWriterManager:
         
         # 프레임 저장
         if self.current_writer and self.current_writer.isOpened():
+            # 실제 프레임 기록
             success = self.current_writer.write(frame)
             if success:
                 self.frame_count += 1
@@ -315,7 +368,8 @@ class VideoWriterManager:
         
         return False
     
-    def _finalize_previous_writer_async(self, writer: EnhancedFFmpegVideoWriter, temp_path: str, final_path: str, start_time: Optional[float], frame_count: int):
+    
+    def _finalize_previous_writer_async(self, writer: EnhancedFFmpegVideoWriter, temp_path: str, final_path: str, start_time_dt: Optional[datetime], frame_count: int):
         """이전 writer를 비동기로 종료하고 파일을 rename"""
         def worker():
             try:
@@ -323,12 +377,13 @@ class VideoWriterManager:
                     writer.release()
                 if temp_path and os.path.exists(temp_path):
                     os.rename(temp_path, final_path)
-                    file_size = os.path.getsize(final_path) / (1024 * 1024) if os.path.exists(final_path) else 0
-                    elapsed = time.time() - start_time if start_time else 0
-                    logger.info(f"영상 저장 완료: {os.path.basename(final_path)}")
-                    logger.info(f"  프레임 수: {frame_count}")
-                    logger.info(f"  영상 길이: {elapsed:.1f}초")
-                    logger.info(f"  파일 크기: {file_size:.1f}MB")
+                    self._log_segment_summary(final_path, frame_count, start_time_dt)
+                    # 세그먼트 완료 알림 (자막 등 동기화 목적)
+                    for listener in list(self.segment_listeners):
+                        try:
+                            listener.on_segment_finalizing(temp_path, final_path, start_time_dt or datetime.now(), frame_count)
+                        except Exception as e:
+                            logger.warning(f"Segment listener on_segment_finalizing 오류: {e}")
                 else:
                     logger.error(f"임시 파일이 존재하지 않음(비동기): {temp_path}")
             except Exception as e:
@@ -350,15 +405,14 @@ class VideoWriterManager:
             # 임시 파일을 최종 파일명으로 변경
             if os.path.exists(self.current_temp_file):
                 os.rename(self.current_temp_file, self.current_final_file)
-                
-                # 파일 크기 확인
-                file_size = os.path.getsize(self.current_final_file) / (1024 * 1024)  # MB
-                elapsed = time.time() - self.video_start_time if self.video_start_time else 0
-                
-                logger.info(f"영상 저장 완료: {os.path.basename(self.current_final_file)}")
-                logger.info(f"  프레임 수: {self.frame_count}")
-                logger.info(f"  영상 길이: {elapsed:.1f}초")
-                logger.info(f"  파일 크기: {file_size:.1f}MB")
+                # 일관된 요약 로그 출력 (프레임 기반 길이)
+                self._log_segment_summary(self.current_final_file, self.frame_count, self.current_segment_planned_start)
+                # 세그먼트 완료 알림 (자막 등 동기화 목적)
+                for listener in list(self.segment_listeners):
+                    try:
+                        listener.on_segment_finalizing(self.current_temp_file, self.current_final_file, self.current_segment_planned_start or datetime.now(), self.frame_count)
+                    except Exception as e:
+                        logger.warning(f"Segment listener on_segment_finalizing 오류: {e}")
             else:
                 logger.error(f"임시 파일이 존재하지 않음: {self.current_temp_file}")
                 
@@ -419,14 +473,12 @@ class VideoWriterManager:
                 'frame_count': 0,
                 'duration': 0
             }
-        
-        duration = time.time() - self.video_start_time if self.video_start_time else 0
-        
-        return {
-            'active': True,
-            'temp_file': os.path.basename(self.current_temp_file) if self.current_temp_file else None,
-            'final_file': os.path.basename(self.current_final_file) if self.current_final_file else None,
-            'frame_count': self.frame_count,
-            'duration': duration,
-            'max_duration': self.max_duration
-        } 
+        else:
+            elapsed = time.time() - self.video_start_time if self.video_start_time else 0
+            return {
+                'active': True,
+                'temp_file': self.current_temp_file,
+                'final_file': self.current_final_file,
+                'frame_count': self.frame_count,
+                'duration': elapsed
+            } 

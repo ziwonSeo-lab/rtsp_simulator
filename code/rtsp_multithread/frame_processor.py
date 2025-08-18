@@ -22,10 +22,12 @@ try:
 	from .config import RTSPConfig, format_gps_coordinates
 	from .blur_handler import BlurHandler
 	from .video_writer import VideoWriterManager
+	from .subtitle_writer import SubtitleWriter
 except ImportError:
 	from config import RTSPConfig, format_gps_coordinates
 	from blur_handler import BlurHandler
 	from video_writer import VideoWriterManager
+	from subtitle_writer import SubtitleWriter
 
 logger = logging.getLogger(__name__)
 
@@ -89,12 +91,11 @@ class OverlayRenderer:
 		lat_dms, lon_dms = format_gps_coordinates(latitude, longitude)
 		
 		# 시간 형식 (초단위까지 포함)
-		time_str = timestamp.strftime("%y%m%d %H:%M:%S")
+		time_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
 
 		# 컴팩트한 형식
 		overlay_text = (
-			f"{vessel_name} | S{self.config.overlay_config.stream_number:02d} | "
-			f"{lat_dms} {lon_dms} | {time_str}"
+			f"{vessel_name} S{self.config.overlay_config.stream_number:02d} {lat_dms} {lon_dms} {time_str}"
 		)
 		
 		return overlay_text
@@ -115,11 +116,11 @@ class OverlayRenderer:
 		scale_factor = min(width_scale, height_scale)
 		
 		return {
-			"font_scale": 0.8 * scale_factor,
-			"font_thickness": max(1, int(2 * scale_factor)),
-			"outline_thickness": max(2, int(4 * scale_factor)),
-			"margin_x": int(10 * scale_factor),
-			"margin_y": int(15 * scale_factor)
+			"font_scale": 0.5 * scale_factor,
+			"font_thickness": max(0.5, int(scale_factor)),
+			"outline_thickness": 1,
+			"margin_x": int(2 * scale_factor),
+			"margin_y": int(2 * scale_factor)
 		}
 	
 	def apply_overlay(self, frame: np.ndarray) -> np.ndarray:
@@ -147,7 +148,7 @@ class OverlayRenderer:
 		font_scale = font_settings["font_scale"]
 		font_thickness = font_settings["font_thickness"]
 		outline_thickness = font_settings["outline_thickness"]
-		font_color = (255, 255, 255)  # 흰색
+		font_color = (0, 0, 0)  # 검은색
 		outline_color = (0, 0, 0)     # 검은색 외곽선
 		
 		# 텍스트 크기 측정
@@ -158,17 +159,6 @@ class OverlayRenderer:
 		# 적응형 위치 설정 (상단 좌측)
 		x = font_settings["margin_x"]
 		y = text_height + font_settings["margin_y"]
-		
-		# 반투명 배경 박스 생성 (가독성 향상)
-		box_coords = [
-			(x - 5, y - text_height - 5),           # 좌상단
-			(x + text_width + 10, y + baseline + 5)  # 우하단
-		]
-		
-		# 배경 박스 그리기 (반투명 검은색)
-		overlay = frame.copy()
-		cv2.rectangle(overlay, box_coords[0], box_coords[1], (0, 0, 0), -1)
-		cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
 		
 		# 텍스트 외곽선 그리기 (가독성 향상)
 		cv2.putText(frame, overlay_text, (x, y), font, font_scale,
@@ -194,9 +184,17 @@ class FrameProcessor(threading.Thread):
 		self.video_writer = VideoWriterManager(config)
 		self.overlay_renderer = OverlayRenderer(config)
 		self.blackbox_manager = None
+		self.subtitle_writer = SubtitleWriter(config)
+		# 비디오 세그먼트 이벤트를 자막 작성기에 연결
+		self.video_writer.add_segment_listener(self.subtitle_writer)
 		
 		# 통계
 		self.stats = ProcessingStats()
+		# 최근 구간 통계 계산용 누적치
+		self._prev_stats_time = time.time()
+		self._prev_processed_frames = 0
+		self._prev_saved_frames = 0
+		self._prev_error_frames = 0
 		
 		logger.info("FrameProcessor 초기화 완료")
 	
@@ -236,12 +234,15 @@ class FrameProcessor(threading.Thread):
 				processed_frame = self.process_frame(frame)
 				
 				if processed_frame is not None:
-					# 영상 저장
+					# 영상 저장 (세그먼트 시작을 보장하기 위해 먼저 수행)
 					if self.video_writer.write_frame(processed_frame):
 						self.stats.saved_frames += 1
+					# 1초 단위 자막 업데이트 (세그먼트가 열린 뒤에 기록)
+					overlay_text = self.overlay_renderer.create_single_line_overlay()
+					self.subtitle_writer.update(timestamp, overlay_text)
 					
 					self.stats.processed_frames += 1
-				
+					
 				# 큐 작업 완료 표시
 				self.frame_queue.task_done()
 				
@@ -302,6 +303,10 @@ class FrameProcessor(threading.Thread):
 		if self.blur_handler:
 			self.blur_handler.cleanup()
 		
+		# 자막 작성기 정리
+		if self.subtitle_writer:
+			self.subtitle_writer.cleanup()
+		
 		logger.info("프레임 프로세서 정리 완료")
 	
 	def get_stats(self) -> dict:
@@ -312,6 +317,21 @@ class FrameProcessor(threading.Thread):
 		stats['blur_handler_available'] = self.blur_handler.is_available() if self.blur_handler else False
 		stats['video_writer_status'] = self.video_writer.get_status() if self.video_writer else {}
 		stats['blur_module_info'] = self.blur_handler.get_module_info() if self.blur_handler else {}
+		# 최근 구간 통계
+		now = time.time()
+		elapsed = max(now - getattr(self, '_prev_stats_time', now), 1e-6)
+		delta_processed = self.stats.processed_frames - getattr(self, '_prev_processed_frames', 0)
+		delta_saved = self.stats.saved_frames - getattr(self, '_prev_saved_frames', 0)
+		delta_errors = self.stats.error_frames - getattr(self, '_prev_error_frames', 0)
+		stats['recent_interval_sec'] = elapsed
+		stats['recent_processed_fps'] = delta_processed / elapsed
+		stats['recent_saved_fps'] = delta_saved / elapsed
+		stats['recent_error_frames'] = delta_errors
+		# 갱신
+		self._prev_stats_time = now
+		self._prev_processed_frames = self.stats.processed_frames
+		self._prev_saved_frames = self.stats.saved_frames
+		self._prev_error_frames = self.stats.error_frames
 		
 		return stats
 	

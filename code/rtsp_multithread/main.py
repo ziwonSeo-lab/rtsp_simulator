@@ -291,12 +291,18 @@ def main():
                 if current_time - last_stats_time >= stats_interval:
                     stats = processor.get_statistics()
                     
-                    # 간단한 현재 상태 출력
-                    recv_frames = stats.get('stream_receiver', {}).get('received_frames', 0)
-                    proc_frames = stats.get('frame_processor', {}).get('processed_frames', 0)
+                    # 간단한 현재 상태 + 최근 구간 FPS/드롭 출력
+                    recv = stats.get('stream_receiver', {})
+                    proc = stats.get('frame_processor', {})
                     queue_size = stats.get('queue_status', {}).get('queue_size', 0)
-                    
-                    logger.info(f"상태 - 수신: {recv_frames}, 처리: {proc_frames}, 큐: {queue_size}")
+                    logger.info(
+                        f"상태 - 수신 누적:{recv.get('received_frames',0)} 손실누적:{recv.get('lost_frames',0)} "
+                        f"최근수신FPS:{recv.get('recent_received_fps',0):.2f} "
+                        f"최근큐드롭:{recv.get('recent_queue_full_drops',0)} | "
+                        f"처리누적:{proc.get('processed_frames',0)} 저장누적:{proc.get('saved_frames',0)} "
+                        f"최근처리FPS:{proc.get('recent_processed_fps',0):.2f} 최근저장FPS:{proc.get('recent_saved_fps',0):.2f} | "
+                        f"큐:{queue_size}"
+                    )
                     
                     last_stats_time = current_time
                 

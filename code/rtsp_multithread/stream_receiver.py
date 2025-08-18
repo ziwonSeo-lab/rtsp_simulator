@@ -27,6 +27,7 @@ class FrameStats:
 	received_frames: int = 0
 	lost_frames: int = 0
 	error_frames: int = 0
+	queue_full_drops: int = 0
 	connection_attempts: int = 0
 	last_frame_time: float = 0
 	
@@ -36,6 +37,7 @@ class FrameStats:
 			'received_frames': self.received_frames,
 			'lost_frames': self.lost_frames,
 			'error_frames': self.error_frames,
+			'queue_full_drops': self.queue_full_drops,
 			'connection_attempts': self.connection_attempts,
 			'last_frame_time': self.last_frame_time,
 			'loss_rate': self.lost_frames / max(self.received_frames + self.lost_frames, 1) * 100
@@ -53,6 +55,14 @@ class StreamReceiver(threading.Thread):
 		self.stats = FrameStats()
 		self.connected = False
 		self.blackbox_manager = None
+		# 수신부 선행 FPS 페이싱 옵션 (기본 비활성화)
+		self.enable_receiver_pacing = os.getenv('RECEIVER_PACING', 'false').lower() in ('1','true','yes','on')
+		# 최근 구간 통계 계산용 누적치
+		self._prev_stats_time = time.time()
+		self._prev_received_frames = 0
+		self._prev_lost_frames = 0
+		self._prev_error_frames = 0
+		self._prev_queue_full_drops = 0
 		
 		# FPS 제어를 위한 변수
 		self.frame_interval = 1.0 / config.input_fps  # 15fps = 0.0667초 간격
@@ -86,11 +96,12 @@ class StreamReceiver(threading.Thread):
 						continue
 					consecutive_failures = 0
 				
-				# FPS 제어를 위한 대기
-				current_time = time.time()
-				if current_time - self.last_frame_time < self.frame_interval:
-					sleep_time = self.frame_interval - (current_time - self.last_frame_time)
-					time.sleep(sleep_time)
+				# FPS 제어를 위한 대기 (옵션)
+				if self.enable_receiver_pacing:
+					current_time = time.time()
+					if current_time - self.last_frame_time < self.frame_interval:
+						sleep_time = self.frame_interval - (current_time - self.last_frame_time)
+						time.sleep(sleep_time)
 				
 				# 프레임 읽기
 				ret, frame = self.cap.read()
@@ -121,6 +132,7 @@ class StreamReceiver(threading.Thread):
 				except queue.Full:
 					# 큐가 가득 찬 경우 프레임 버림
 					self.stats.lost_frames += 1
+					self.stats.queue_full_drops += 1
 					logger.debug("프레임 큐 가득참, 프레임 버림")
 				
 			except Exception as e:
@@ -150,7 +162,7 @@ class StreamReceiver(threading.Thread):
 			
 			# 연결 설정 최적화 (일부 백엔드에서만 적용)
 			try:
-				self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # 버퍼 크기 최소화
+				self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 4)  # 버퍼 크기 완만히 확대(지터 흡수)
 				self.cap.set(cv2.CAP_PROP_FPS, self.config.input_fps)  # FPS 설정
 			except Exception:
 				pass
@@ -223,8 +235,27 @@ class StreamReceiver(threading.Thread):
 	def get_stats(self) -> dict:
 		"""수신 통계 반환"""
 		stats = self.stats.to_dict()
+		# 최근 구간 통계 계산
+		now = time.time()
+		elapsed = max(now - getattr(self, '_prev_stats_time', now), 1e-6)
+		delta_received = self.stats.received_frames - getattr(self, '_prev_received_frames', 0)
+		delta_lost = self.stats.lost_frames - getattr(self, '_prev_lost_frames', 0)
+		delta_errors = self.stats.error_frames - getattr(self, '_prev_error_frames', 0)
+		delta_queue_drop = self.stats.queue_full_drops - getattr(self, '_prev_queue_full_drops', 0)
+		stats['recent_interval_sec'] = elapsed
+		stats['recent_received_fps'] = delta_received / elapsed
+		stats['recent_lost_frames'] = delta_lost
+		stats['recent_error_frames'] = delta_errors
+		stats['recent_queue_full_drops'] = delta_queue_drop
+		# 상태
 		stats['connected'] = self.is_connected()
 		stats['queue_size'] = self.frame_queue.qsize()
+		# 기준 갱신
+		self._prev_stats_time = now
+		self._prev_received_frames = self.stats.received_frames
+		self._prev_lost_frames = self.stats.lost_frames
+		self._prev_error_frames = self.stats.error_frames
+		self._prev_queue_full_drops = self.stats.queue_full_drops
 		return stats
 	
 	def get_stream_info(self) -> dict:

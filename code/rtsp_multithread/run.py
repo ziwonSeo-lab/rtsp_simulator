@@ -22,50 +22,101 @@ load_dotenv()
 # 패키지 경로 추가
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+class DailyDateFileHandler(logging.Handler):
+	"""날짜가 바뀌면 파일명을 오늘 날짜로 바꿔가며 기록하는 핸들러."""
+	def __init__(self, logs_dir: Path, prefix: str, level=logging.NOTSET):
+		super().__init__(level)
+		self.logs_dir = Path(logs_dir)
+		self.prefix = prefix
+		self.current_date = datetime.now().strftime('%Y%m%d')
+		self._inner = None
+		self._open_for_today()
+	
+	def _filepath_for(self, datestr: str) -> Path:
+		y, m, d = datestr[:4], datestr[4:6], datestr[6:8]
+		return (self.logs_dir / y / m / d) / f"{self.prefix}_{datestr}.log"
+	
+	def _open_for_today(self):
+		path = self._filepath_for(self.current_date)
+		# 날짜 디렉터리까지 생성
+		path.parent.mkdir(parents=True, exist_ok=True)
+		# 기존 핸들러 닫기
+		if self._inner:
+			try:
+				self._inner.close()
+			except Exception:
+				pass
+		self._inner = logging.FileHandler(str(path), encoding='utf-8')
+		# 포매터/레벨은 외부에서 setFormatter/setLevel로 설정됨
+		self._inner.setLevel(self.level)
+		if self.formatter:
+			self._inner.setFormatter(self.formatter)
+	
+	def emit(self, record: logging.LogRecord) -> None:
+		new_date = datetime.now().strftime('%Y%m%d')
+		if new_date != self.current_date:
+			self.current_date = new_date
+			self._open_for_today()
+		self._inner.emit(record)
+	
+	def setLevel(self, level):
+		super().setLevel(level)
+		if self._inner:
+			self._inner.setLevel(level)
+	
+	def setFormatter(self, fmt):
+		super().setFormatter(fmt)
+		if self._inner:
+			self._inner.setFormatter(fmt)
+
 def setup_logging():
-    """로깅 설정"""
-    log_level = os.getenv('LOG_LEVEL', 'DEBUG').upper()
-    # 로그 디렉터리 설정 (환경변수 LOG_DIR 우선, 없으면 SCRIPT_DIR/logs)
-    script_dir = Path(__file__).parent
-    default_logs_dir = os.getenv('LOG_DIR', str(script_dir / 'logs'))
-    Path(default_logs_dir).mkdir(parents=True, exist_ok=True)
-    # 기본 파일명을 날짜 포함으로 변경
-    default_log_file = str(Path(default_logs_dir) / f"rtsp_processor_{datetime.now().strftime('%Y%m%d')}.log")
-    log_file = os.getenv('LOG_FILE', default_log_file)
-    
-    # 로그 레벨 검증
-    numeric_level = getattr(logging, log_level, logging.DEBUG)
-    
-    # 회전 설정 (기본: 자정마다 회전, 7개 이력 보관)
-    rotation_enabled = os.getenv('LOG_ROTATION', 'on').lower() in ('1', 'true', 'yes', 'on')
-    rotate_interval = int(os.getenv('LOG_ROTATE_INTERVAL', '1'))  # 일 단위 간격
-    backup_count = int(os.getenv('LOG_BACKUP_COUNT', '7'))
-    
-    handlers = [logging.StreamHandler(sys.stdout)]
-    # 콘솔은 LOG_LEVEL을 따름
-    handlers[0].setLevel(numeric_level)
-    
-    # 파일 핸들러는 WARNING 이상만 기록
-    if rotation_enabled:
-        file_handler = TimedRotatingFileHandler(
-            log_file,
-            when='midnight',
-            interval=rotate_interval,
-            backupCount=backup_count,
-            encoding='utf-8'
-        )
-    else:
-        file_handler = logging.FileHandler(log_file, encoding='utf-8')
-    file_handler.setLevel(logging.WARNING)
-    handlers.append(file_handler)
-    
-    logging.basicConfig(
-        level=logging.DEBUG,  # 루트는 넉넉히 두고 개별 핸들러로 제어
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=handlers
-    )
-    
-    return logging.getLogger(__name__)
+	"""로깅 설정"""
+	log_level = os.getenv('LOG_LEVEL', 'DEBUG').upper()
+	# 로그 디렉터리 설정 (환경변수 LOG_DIR 우선, 없으면 SCRIPT_DIR/logs)
+	script_dir = Path(__file__).parent
+	# 우선순위: LOG_DIR > FINAL_OUTPUT_PATH/logs > SCRIPT_DIR/logs
+	log_dir_env = os.getenv('LOG_DIR')
+	final_output_base = os.getenv('FINAL_OUTPUT_PATH')
+	if log_dir_env:
+		default_logs_dir = log_dir_env
+	elif final_output_base:
+		default_logs_dir = str(Path(final_output_base) / 'logs')
+	else:
+		default_logs_dir = str(script_dir / 'logs')
+	Path(default_logs_dir).mkdir(parents=True, exist_ok=True)
+	# 파일명 프리픽스/디렉터리 파싱 (LOG_FILE이 지정되면 경로/이름을 반영하되 날짜는 핸들러가 부여)
+	log_file_env = os.getenv('LOG_FILE', '')
+	logs_dir_path = Path(default_logs_dir)
+	prefix = 'rtsp_processor'
+	if log_file_env:
+		p = Path(log_file_env)
+		if p.suffix == '.log':
+			prefix = p.stem if p.stem else prefix
+			if str(p.parent) not in ('', '.'):
+				logs_dir_path = p.parent
+		else:
+			# 확장자 없으면 이름만으로 간주
+			prefix = p.name or prefix
+	
+	# 로그 레벨 검증
+	numeric_level = getattr(logging, log_level, logging.DEBUG)
+	
+	handlers = [logging.StreamHandler(sys.stdout)]
+	handlers[0].setLevel(numeric_level)
+	
+	# 파일 핸들러 레벨은 환경변수로 조정 (기본 INFO), 날짜 바뀌면 파일명 교체
+	file_log_level = os.getenv('FILE_LOG_LEVEL', 'INFO').upper()
+	file_handler = DailyDateFileHandler(logs_dir_path, prefix)
+	file_handler.setLevel(getattr(logging, file_log_level, logging.INFO))
+	handlers.append(file_handler)
+	
+	logging.basicConfig(
+		level=logging.DEBUG,  # 루트는 넉넉히 두고 개별 핸들러로 제어
+		format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+		handlers=handlers
+	)
+	
+	return logging.getLogger(__name__)
 
 def validate_environment():
     """환경변수 검증"""
@@ -160,7 +211,11 @@ def main():
         # 상태 모니터링 루프
         import time
         last_stats_time = 0
-        stats_interval = 30  # 30초마다 상태 출력
+        # 상태 출력 주기 (환경변수로 조정 가능, 기본 30초)
+        try:
+            stats_interval = int(os.getenv('STATS_INTERVAL', '30'))
+        except Exception:
+            stats_interval = 30
         
         logger.info("📡 처리 중... (Ctrl+C로 중지)")
         
@@ -171,19 +226,21 @@ def main():
                 # 주기적 상태 출력
                 if current_time - last_stats_time >= stats_interval:
                     stats = processor.get_statistics()
-                    
-                    # 상태 정보
-                    recv_frames = stats.get('stream_receiver', {}).get('received_frames', 0)
-                    proc_frames = stats.get('frame_processor', {}).get('processed_frames', 0)
-                    saved_frames = stats.get('frame_processor', {}).get('saved_frames', 0)
+                    # 최근 구간 지표 포함 상태 로그 (INFO)
+                    recv = stats.get('stream_receiver', {})
+                    proc = stats.get('frame_processor', {})
                     queue_size = stats.get('queue_status', {}).get('queue_size', 0)
-                    
-                    # 시스템 리소스
+                    logger.info(
+                        f"📊 상태 - 수신누적:{recv.get('received_frames',0)} 손실누적:{recv.get('lost_frames',0)} "
+                        f"최근수신FPS:{recv.get('recent_received_fps',0):.2f} 최근큐드롭:{recv.get('recent_queue_full_drops',0)} | "
+                        f"처리누적:{proc.get('processed_frames',0)} 저장누적:{proc.get('saved_frames',0)} "
+                        f"최근처리FPS:{proc.get('recent_processed_fps',0):.2f} 최근저장FPS:{proc.get('recent_saved_fps',0):.2f} | "
+                        f"큐:{queue_size}"
+                    )
+                    # 시스템 리소스 요약은 DEBUG로 유지
                     sys_stats = stats.get('system_stats', {})
                     cpu_percent = sys_stats.get('cpu_percent', 0)
                     memory_percent = sys_stats.get('memory_percent', 0)
-                    
-                    logger.debug(f"📊 상태 - 수신:{recv_frames} 처리:{proc_frames} 저장:{saved_frames} 큐:{queue_size}")
                     logger.debug(f"🖥️  리소스 - CPU:{cpu_percent:.1f}% 메모리:{memory_percent:.1f}%")
                     
                     last_stats_time = current_time

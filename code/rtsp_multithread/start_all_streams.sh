@@ -13,7 +13,14 @@ BASE_SESSION_NAME="rtsp_stream"
 # 프로필 기반 설정 (sim/camera 등)
 PROFILE="${PROFILE:-sim}"
 ENV_BASE_DIR="$SCRIPT_DIR/profiles/$PROFILE"
-LOGS_DIR="$SCRIPT_DIR/logs"
+# 로그 디렉터리 우선순위: LOG_DIR > FINAL_OUTPUT_PATH/logs > SCRIPT_DIR/logs
+if [ -n "$LOG_DIR" ]; then
+    LOGS_DIR="$LOG_DIR"
+elif [ -n "$FINAL_OUTPUT_PATH" ]; then
+    LOGS_DIR="$FINAL_OUTPUT_PATH/logs"
+else
+    LOGS_DIR="$SCRIPT_DIR/logs"
+fi
 mkdir -p "$LOGS_DIR"
 # 현재 PROFILE 기록 (상태 스크립트가 자동 추적할 수 있도록)
 echo -n "$PROFILE" > "$LOGS_DIR/.current_profile"
@@ -107,25 +114,40 @@ SELF_SCRIPT="$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "$0")"
 trap 'rm -f "$SELF_SCRIPT"' EXIT
 rm -f "$SELF_SCRIPT"
 export DOTENV_PATH=".env.temp${STREAM_INDEX}"
-# 로그 디렉터리 설정
-LOG_DIR="$SCRIPT_DIR/logs"
+# 로그 디렉터리 설정 (.env에서 LOG_DIR 우선, 없으면 FINAL_OUTPUT_PATH/logs)
+env_log_dir=""
+env_final_output=""
+if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then
+    env_log_dir=$(grep -E '^LOG_DIR=' "$ENV_FILE" | tail -n1 | cut -d= -f2-)
+    env_final_output=$(grep -E '^FINAL_OUTPUT_PATH=' "$ENV_FILE" | tail -n1 | cut -d= -f2-)
+fi
+if [ -n "$env_log_dir" ]; then
+    LOG_DIR="$env_log_dir"
+elif [ -n "$env_final_output" ]; then
+    LOG_DIR="$env_final_output/logs"
+else
+    LOG_DIR="$SCRIPT_DIR/logs"
+fi
 mkdir -p "$LOG_DIR"
 # 날짜별 로그 파일 설정 및 헤더 기록
 current_date=$(date +%Y%m%d)
-log_file="$LOG_DIR/rtsp_stream${STREAM_INDEX}_${current_date}.log"
+date_dir=$(date +%Y/%m/%d)
+mkdir -p "$LOG_DIR/$date_dir"
+log_file="$LOG_DIR/$date_dir/rtsp_stream${STREAM_INDEX}_${current_date}.log"
 echo "스트림 ${STREAM_INDEX} 시작: $(date)" >> "$log_file"
 echo "설정파일: $ENV_FILE" >> "$log_file"
 echo "========================================" >> "$log_file"
 
 # .env 파일을 임시로 .env로 복사하여 실행
 cp "$ENV_FILE" ".env"
-# 날짜 변경 시 자동 회전하며 로그 기록
-export LOG_DIR
+# 날짜 변경 시 자동 회전하며 로그 기록 (LOG_DIR은 셸 내부에서만 사용)
 python3 -u "$PY_SCRIPT" 2>&1 | while IFS= read -r line; do
     new_date=$(date +%Y%m%d)
     if [ "$new_date" != "$current_date" ]; then
         current_date="$new_date"
-        log_file="$LOG_DIR/rtsp_stream${STREAM_INDEX}_${current_date}.log"
+        date_dir=$(date +%Y/%m/%d)
+        mkdir -p "$LOG_DIR/$date_dir"
+        log_file="$LOG_DIR/$date_dir/rtsp_stream${STREAM_INDEX}_${current_date}.log"
         echo "----- 날짜 변경: $(date) -----" | tee -a "$log_file"
     fi
     echo "$line" | tee -a "$log_file"
@@ -167,29 +189,45 @@ fi
     # 파일 이동 서비스를 별도 세션에서 실행
     # 임시 실행 스크립트 생성
     temp_mover_script="$SCRIPT_DIR/.tmp_run_file_mover.sh"
+    # 파일 이동 서비스가 참조할 env 파일(최종 경로 추출용)
+    FM_ENV_REF="$ENV_BASE_DIR/.env.stream1"
     cat > "$temp_mover_script" <<'EOF'
 #!/bin/bash
 cd "$SCRIPT_DIR"
 SELF_SCRIPT="$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "$0")"
 trap 'rm -f "$SELF_SCRIPT"' EXIT
 rm -f "$SELF_SCRIPT"
-# 로그 디렉터리 설정
-LOG_DIR="$SCRIPT_DIR/logs"
+# 로그 디렉터리 설정 (.env에서 LOG_DIR 우선, 없으면 FINAL_OUTPUT_PATH/logs)
+env_log_dir=""
+env_final_output=""
+if [ -n "$FM_ENV_REF" ] && [ -f "$FM_ENV_REF" ]; then
+    env_log_dir=$(grep -E '^LOG_DIR=' "$FM_ENV_REF" | tail -n1 | cut -d= -f2-)
+    env_final_output=$(grep -E '^FINAL_OUTPUT_PATH=' "$FM_ENV_REF" | tail -n1 | cut -d= -f2-)
+fi
+if [ -n "$env_log_dir" ]; then
+    LOG_DIR="$env_log_dir"
+elif [ -n "$env_final_output" ]; then
+    LOG_DIR="$env_final_output/logs"
+else
+    LOG_DIR="$SCRIPT_DIR/logs"
+fi
 mkdir -p "$LOG_DIR"
 # 날짜별 로그 파일 설정 및 헤더 기록
 current_date=$(date +%Y%m%d)
+date_dir=$(date +%Y/%m/%d)
+mkdir -p "$LOG_DIR/$date_dir"
 log_prefix="file_mover_"
-log_file="$LOG_DIR/${log_prefix}${current_date}.log"
+log_file="$LOG_DIR/$date_dir/${log_prefix}${current_date}.log"
 echo "파일 이동 서비스 시작: $(date)" >> "$log_file"
 echo "========================================" >> "$log_file"
-# 날짜 변경 시 자동 회전하며 로그 기록
-export PY_LOG_TO_FILE=off
-export LOG_DIR
+# 날짜 변경 시 자동 회전하며 로그 기록 (LOG_DIR은 셸 내부에서만 사용)
 python3 -u file_mover.py 2>&1 | while IFS= read -r line; do
     new_date=$(date +%Y%m%d)
     if [ "$new_date" != "$current_date" ]; then
         current_date="$new_date"
-        log_file="$LOG_DIR/${log_prefix}${current_date}.log"
+        date_dir=$(date +%Y/%m/%d)
+        mkdir -p "$LOG_DIR/$date_dir"
+        log_file="$LOG_DIR/$date_dir/${log_prefix}${current_date}.log"
         echo "----- 날짜 변경: $(date) -----" | tee -a "$log_file"
     fi
     echo "$line" | tee -a "$log_file"

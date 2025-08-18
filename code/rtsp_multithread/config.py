@@ -288,7 +288,7 @@ def decimal_to_dms_short(decimal_degrees: float, is_longitude: bool = False) -> 
     seconds = (minutes_float - minutes) * 60
     
     # 컴팩트 형식: 123°45'12.3"E
-    return f"{degrees:03d}°{minutes:02d}'{seconds:04.1f}\"{direction}"
+    return f"{degrees:03d}d{minutes:02d}'{seconds:04.1f}\"{direction}"
 
 def format_gps_coordinates(latitude: float, longitude: float) -> tuple[str, str]:
     """GPS 좌표를 60분법으로 포맷팅"""

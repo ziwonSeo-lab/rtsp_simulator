@@ -76,9 +76,12 @@ for i in {1..6}; do
 RTSP_URL=$RTSP_URL
 VESSEL_NAME=$VESSEL_NAME
 STREAM_NUMBER=$STREAM_NUMBER
-
-# =============================================================================
-# 블러 처리 설정
+# 카메라 식별자 (필요에 맞게 수정해서 사용)
+CAMERA_ID=${CAMERA_ID:-$STREAM_NUMBER}
+CAMERA_NAME=${CAMERA_NAME:-camera$STREAM_NUMBER}
+ 
+ # =============================================================================
+ # 블러 처리 설정
 # =============================================================================
 BLUR_MODULE_PATH=$BLUR_MODULE_PATH
 BLUR_ENABLED=$BLUR_ENABLED
