@@ -11,15 +11,24 @@ FILE_MOVER_SESSION="rtsp_file_mover"
 BASE_IP="10.2.10.158"
 START_PORT=1111
 
-# 스크립트/로그/프로필 경로
+# 스크립트/로그 경로
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOGS_DIR="$SCRIPT_DIR/logs"
-# PROFILE 우선순위: env > logs/.current_profile > sim
-if [ -z "${PROFILE:-}" ] && [ -f "$LOGS_DIR/.current_profile" ]; then
-  PROFILE="$(cat "$LOGS_DIR/.current_profile" 2>/dev/null || echo sim)"
+# 로그 디렉터리: .env.stream1의 LOG_DIR > .env.stream1의 FINAL_OUTPUT_PATH/logs > SCRIPT_DIR/logs
+ENV_BASE_DIR="$SCRIPT_DIR"
+ENV_REF="$ENV_BASE_DIR/.env.stream1"
+env_log_dir=""
+env_final_output=""
+if [ -f "$ENV_REF" ]; then
+  env_log_dir=$(grep -E '^LOG_DIR=' "$ENV_REF" | tail -n1 | cut -d= -f2-)
+  env_final_output=$(grep -E '^FINAL_OUTPUT_PATH=' "$ENV_REF" | tail -n1 | cut -d= -f2-)
 fi
-PROFILE="${PROFILE:-sim}"
-ENV_BASE_DIR="$SCRIPT_DIR/profiles/$PROFILE"
+if [ -n "$env_log_dir" ]; then
+  LOGS_DIR="$env_log_dir"
+elif [ -n "$env_final_output" ]; then
+  LOGS_DIR="$env_final_output/logs"
+else
+  LOGS_DIR="$SCRIPT_DIR/logs"
+fi
 
 # 현재 시간
 echo "확인 시간: $(date)"
@@ -48,7 +57,8 @@ for i in {1..6}; do
     rtsp_url="rtsp://${BASE_IP}:${port}/live"
     env_file="$ENV_BASE_DIR/.env.stream${i}"
     current_date=$(date +%Y%m%d)
-    log_file="$LOGS_DIR/rtsp_stream${i}_${current_date}.log"
+    date_dir=$(date +%Y/%m/%d)
+    log_file="$LOGS_DIR/$date_dir/rtsp_stream${i}_${current_date}.log"
     
     echo ""
     echo "   📡 스트림 ${i} (포트 ${port}):"
@@ -63,9 +73,9 @@ for i in {1..6}; do
     
     # 설정 파일 상태
     if [ -f "$env_file" ]; then
-        echo "      설정: ✅ $env_file 존재 (PROFILE=$PROFILE)"
+        echo "      설정: ✅ $env_file 존재"
     else
-        echo "      설정: ❌ $env_file 없음 (PROFILE=$PROFILE)"
+        echo "      설정: ❌ $env_file 없음"
     fi
     
     # 로그 파일 상태
@@ -148,12 +158,12 @@ echo "🔧 빠른 액션:"
 echo "   전체 시작: ./start_all_streams.sh"
 echo "   전체 중지: ./stop_all_streams.sh"
 echo "   특정 세션 접속: screen -r rtsp_stream1 (1~6)"
-echo "   실시간 로그: tail -f \"$LOGS_DIR/rtsp_stream1_$(date +%Y%m%d).log\" (1~6)"
+echo "   실시간 로그: tail -f \"$LOGS_DIR/$(date +%Y/%m/%d)/rtsp_stream1_$(date +%Y%m%d).log\" (1~6)"
 
 # 파일 이동 서비스 제어
 if [ "$running_mover" -gt 0 ]; then
     echo ""
     echo "📦 파일 이동 서비스 제어:"
     echo "   접속: screen -r $FILE_MOVER_SESSION"
-    echo "   로그: tail -f \"$LOGS_DIR/file_mover_$(date +%Y%m%d).log\""
+    echo "   로그: tail -f \"$LOGS_DIR/$(date +%Y/%m/%d)/file_mover_$(date +%Y%m%d).log\""
 fi 

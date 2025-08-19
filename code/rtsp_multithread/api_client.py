@@ -45,7 +45,7 @@ class CameraVideoData:
 	file_name: str
 	file_real_name: str
 	file_path: str
-	file_size: str
+	file_size: str  # MB 문자열 (예: "12.34")
 	file_ext: str
 	record_start_time: datetime
 	record_end_time: datetime
@@ -110,8 +110,8 @@ class BlackboxAPIClient:
 			)
 			
 			# logger.debug(f"블랙박스 데이터 수신 성공: speed={blackbox_data.speed}, "
-			# 		   f"vessel={blackbox_data.vessel_name}, "
-			# 		   f"position=({blackbox_data.latitude}, {blackbox_data.longitude})")
+			# 	   f"vessel={blackbox_data.vessel_name}, "
+			# 	   f"position=({blackbox_data.latitude}, {blackbox_data.longitude})")
 			
 			return blackbox_data
 			
@@ -147,7 +147,7 @@ class BlackboxAPIClient:
 				"fileName": video_data.file_name,
 				"fileRealName": video_data.file_real_name,
 				"filePath": video_data.file_path,
-				"fileSize": video_data.file_size,  # 문자열
+				"fileSize": video_data.file_size,  # MB 문자열
 				"fileExt": video_data.file_ext,
 				"recordStartTime": video_data.record_start_time.isoformat(timespec='seconds'),
 				"recordEndTime": video_data.record_end_time.isoformat(timespec='seconds')
@@ -186,6 +186,7 @@ class BlackboxAPIClient:
 			logger.error(f"API 연결 테스트 실패: {e}")
 			return False
 
+
 def create_camera_video_data(
 	file_path: str,
 	file_name: str,
@@ -199,13 +200,14 @@ def create_camera_video_data(
 	카메라 ID/Name은 환경변수로 스트림별 설정 가능:
 	- CAMERA_ID_S{N}, CAMERA_NAME_S{N} (예: CAMERA_ID_S1, CAMERA_NAME_S1)
 	- 없음이면 CAMERA_ID, CAMERA_NAME 사용
-	- 모두 없으면 기본값: id=스트림번호, name=f"camera{스트림번호}"
+	- 모두 없으면 기본값: id=스트림번호, name=f"camera{stream_num}"
 	(필요에 맞게 ENV를 설정해 사용하세요)
 	"""
 	
 	# 파일 정보 추출
 	file_size_int = os.path.getsize(file_path) if os.path.exists(file_path) else 0
-	file_size = str(file_size_int)
+	file_size_mb = file_size_int / (1024 * 1024) if file_size_int > 0 else 0
+	file_size = f"{file_size_mb:.2f}"
 	file_ext = os.path.splitext(file_name)[1].lstrip('.')
 	
 	# 스트림 번호 결정 (우선순위: 인자 -> ENV -> 1)
@@ -218,7 +220,7 @@ def create_camera_video_data(
 	env_cam_id = os.getenv(f'CAMERA_ID_S{stream_num}') or os.getenv('CAMERA_ID')
 	env_cam_name = os.getenv(f'CAMERA_NAME_S{stream_num}') or os.getenv('CAMERA_NAME')
 	
-	# 기본값: id=스트림 번호, name=camera{스트림 번호}
+	# 기본값: id=스트림 번호, name=camera{stream_num}
 	try:
 		camera_id = int(env_cam_id) if env_cam_id is not None and env_cam_id.strip() != '' else stream_num
 	except ValueError:

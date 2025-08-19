@@ -1,29 +1,50 @@
 #!/bin/bash
 
-# 6개 RTSP 스트림을 screen으로 백그라운드 실행하는 스크립트
+# RTSP 스트림을 screen으로 백그라운드 실행하는 스크립트
 # 사용법: ./start_all_streams.sh
 
-echo "🚀 6개 RTSP 스트림 백그라운드 실행"
+echo "🚀 RTSP 스트림 백그라운드 실행"
 echo "================================="
 
 # 설정
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_SCRIPT="run.py"
 BASE_SESSION_NAME="rtsp_stream"
-# 프로필 기반 설정 (sim/camera 등)
-PROFILE="${PROFILE:-sim}"
-ENV_BASE_DIR="$SCRIPT_DIR/profiles/$PROFILE"
-# 로그 디렉터리 우선순위: LOG_DIR > FINAL_OUTPUT_PATH/logs > SCRIPT_DIR/logs
-if [ -n "$LOG_DIR" ]; then
-    LOGS_DIR="$LOG_DIR"
-elif [ -n "$FINAL_OUTPUT_PATH" ]; then
-    LOGS_DIR="$FINAL_OUTPUT_PATH/logs"
+# 환경 파일 위치: 스크립트 디렉터리
+ENV_BASE_DIR="$SCRIPT_DIR"
+# 로그 디렉터리: .env.stream1의 LOG_DIR > .env.stream1의 FINAL_OUTPUT_PATH/logs > SCRIPT_DIR/logs
+ENV_REF="$ENV_BASE_DIR/.env.stream1"
+env_log_dir=""
+env_final_output=""
+if [ -f "$ENV_REF" ]; then
+    env_log_dir=$(grep -E '^LOG_DIR=' "$ENV_REF" | tail -n1 | cut -d= -f2-)
+    env_final_output=$(grep -E '^FINAL_OUTPUT_PATH=' "$ENV_REF" | tail -n1 | cut -d= -f2-)
+fi
+if [ -n "$env_log_dir" ]; then
+    LOGS_DIR="$env_log_dir"
+elif [ -n "$env_final_output" ]; then
+    LOGS_DIR="$env_final_output/logs"
 else
     LOGS_DIR="$SCRIPT_DIR/logs"
 fi
 mkdir -p "$LOGS_DIR"
-# 현재 PROFILE 기록 (상태 스크립트가 자동 추적할 수 있도록)
-echo -n "$PROFILE" > "$LOGS_DIR/.current_profile"
+
+# 스트림 개수 결정: ENV > .env.stream1(NUM_STREAMS) > 디렉토리 내 파일 개수 추론 > 기본 6
+NUM_STREAMS_CANDIDATE="${NUM_STREAMS:-}"
+if [ -z "$NUM_STREAMS_CANDIDATE" ] && [ -f "$ENV_REF" ]; then
+    NUM_STREAMS_CANDIDATE=$(grep -E '^NUM_STREAMS=' "$ENV_REF" | tail -n1 | cut -d= -f2-)
+fi
+# 숫자 검증 실패 시 파일명 기반 최대 인덱스로 추론
+if ! [[ "$NUM_STREAMS_CANDIDATE" =~ ^[0-9]+$ ]] || [ "$NUM_STREAMS_CANDIDATE" -le 0 ]; then
+    NUM_STREAMS_CANDIDATE=$(ls -1 "$ENV_BASE_DIR"/.env.stream* 2>/dev/null | sed -n 's/.*\.env\.stream\([0-9]\+\)$/\1/p' | sort -n | tail -n1)
+fi
+if ! [[ "$NUM_STREAMS_CANDIDATE" =~ ^[0-9]+$ ]] || [ "$NUM_STREAMS_CANDIDATE" -le 0 ]; then
+    NUM_STREAMS=6
+else
+    NUM_STREAMS=$NUM_STREAMS_CANDIDATE
+fi
+
+echo "📦 감지된 스트림 개수: ${NUM_STREAMS}"
 
 # 사전 확인
 echo "📋 사전 확인 중..."
@@ -43,7 +64,7 @@ fi
 
 # .env 파일들 존재 확인
 missing_env=false
-for i in {1..6}; do
+for i in $(seq 1 ${NUM_STREAMS}); do
     env_file="$ENV_BASE_DIR/.env.stream${i}"
     if [ ! -f "$env_file" ]; then
         echo "❌ $env_file 파일이 없습니다"
@@ -68,11 +89,23 @@ else
 fi
 
 echo ""
-echo "🎬 6개 스트림 실행 시작..."
+
+# ======================= 시간 동기화(주석 예시) ==========================
+# 블랙박스 API의 recordedDate 기준으로 주기적으로 서버 시간을 동기화하는 별도 세션
+# - 필요 패키지: jq (설치: sudo apt-get update && sudo apt-get install -y jq)
+# - 사용 방법: 아래 한 줄의 주석을 해제하세요
+# - API 주소: .env.stream1의 BLACKBOX_API_URL(없으면 http://localhost)
+# - 주기 설정: TIME_SYNC_INTERVAL_SEC(초). 우선순위: 환경변수 > .env.stream1 > 기본값 300
+# - sudo 비밀번호 무입력 설정은 sudoers에 NOPASSWD 규칙 추가 필요
+# screen -dmS bb_time_sync bash -lc 'BB_API="$(grep -E "^BLACKBOX_API_URL=" "$ENV_BASE_DIR/.env.stream1" | cut -d= -f2- | tr -d "\"")"; BB_API="${BB_API:-http://localhost}"; INTERVAL="${TIME_SYNC_INTERVAL_SEC:-}"; if [ -z "$INTERVAL" ]; then INTERVAL="$(grep -E "^TIME_SYNC_INTERVAL_SEC=" "$ENV_BASE_DIR/.env.stream1" | cut -d= -f2-)"; fi; INTERVAL="${INTERVAL:-300}"; while true; do dt=$(curl -sS "$BB_API/api/blackbox-logs/latest-gps" | jq -r ".payload.recordedDate"); if [ -n "$dt" ] && [ "$dt" != "null" ]; then sudo timedatectl set-ntp false; sudo timedatectl set-time "$dt"; sudo hwclock --systohc; fi; sleep "$INTERVAL"; done'
+# ======================================================================
+
+echo ""
+echo "🎬 ${NUM_STREAMS}개 스트림 실행 시작..."
 
 # 기존 세션 종료 (선택사항)
 echo "🧹 기존 세션 정리 중..."
-for i in {1..6}; do
+for i in $(seq 1 ${NUM_STREAMS}); do
     session_name="${BASE_SESSION_NAME}${i}"
     if screen -list | grep -q "$session_name"; then
         screen -S "$session_name" -X quit 2>/dev/null
@@ -82,8 +115,8 @@ done
 
 sleep 2
 
-# 6개 스트림 실행
-for i in {1..6}; do
+# 스트림 실행
+for i in $(seq 1 ${NUM_STREAMS}); do
     session_name="${BASE_SESSION_NAME}${i}"
     env_file="$ENV_BASE_DIR/.env.stream${i}"
     log_file="rtsp_stream${i}_$(date +%Y%m%d).log"
@@ -153,8 +186,8 @@ python3 -u "$PY_SCRIPT" 2>&1 | while IFS= read -r line; do
     echo "$line" | tee -a "$log_file"
 done
 
-echo "스트림 ${i} 종료: $(date)" >> "$log_file"
-rm -f ".env.temp${i}"
+echo "스트림 ${STREAM_INDEX} 종료: $(date)" >> "$log_file"
+rm -f ".env.temp${STREAM_INDEX}"
 
 # 종료 시 Enter 키 대기 (세션 유지)
 echo "프로세스가 종료되었습니다. Enter 키를 눌러 세션을 종료하세요."
@@ -253,7 +286,8 @@ else
 fi
 
 echo ""
-echo "✅ 6개 스트림 + 파일 이동 서비스 실행 완료!"
+echo "✅ ${NUM_STREAMS}개 스트림 + 파일 이동 서비스 실행 완료!"
+
 echo ""
 echo "📊 실행 중인 세션 목록:"
 screen -list | grep -E "${BASE_SESSION_NAME}|${FILE_MOVER_SESSION}" | sed 's/^/   /'
@@ -261,16 +295,16 @@ screen -list | grep -E "${BASE_SESSION_NAME}|${FILE_MOVER_SESSION}" | sed 's/^/ 
 echo ""
 echo "🔧 관리 명령어:"
 echo "   전체 상태 확인: screen -list"
-echo "   개별 세션 접속: screen -r ${BASE_SESSION_NAME}1 (1~6)"
+echo "   개별 세션 접속: screen -r ${BASE_SESSION_NAME}1 (1~${NUM_STREAMS})"
 echo "   세션에서 나가기: Ctrl+A, D"
 echo "   전체 중지: ./stop_all_streams.sh"
-echo "   로그 확인: tail -f \"$LOGS_DIR/rtsp_stream1_$(date +%Y%m%d).log\" (1~6)"
+echo "   로그 확인: tail -f \"$LOGS_DIR/rtsp_stream1_$(date +%Y%m%d).log\" (1~${NUM_STREAMS})"
 
 echo ""
 echo "📁 생성된 파일들:"
 echo "   로그 파일 폴더: $LOGS_DIR"
-echo "   스트림 로그: rtsp_stream1_$(date +%Y%m%d).log ~ rtsp_stream6_$(date +%Y%m%d).log"
-echo "   임시 env: .env.temp1 ~ .env.temp6"
+echo "   스트림 로그: rtsp_stream1_$(date +%Y%m%d).log ~ rtsp_stream${NUM_STREAMS}_$(date +%Y%m%d).log"
+echo "   임시 env: .env.temp1 ~ .env.temp${NUM_STREAMS}"
 
 echo ""
 echo "⚠️  주의사항:"
