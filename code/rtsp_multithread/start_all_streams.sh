@@ -174,7 +174,7 @@ echo "========================================" >> "$log_file"
 # .env 파일을 임시로 .env로 복사하여 실행
 cp "$ENV_FILE" ".env"
 # 날짜 변경 시 자동 회전하며 로그 기록 (LOG_DIR은 셸 내부에서만 사용)
-python3 -u "$PY_SCRIPT" 2>&1 | while IFS= read -r line; do
+uv run python -u "$PY_SCRIPT" 2>&1 | while IFS= read -r line; do
     new_date=$(date +%Y%m%d)
     if [ "$new_date" != "$current_date" ]; then
         current_date="$new_date"
@@ -254,7 +254,7 @@ log_file="$LOG_DIR/$date_dir/${log_prefix}${current_date}.log"
 echo "파일 이동 서비스 시작: $(date)" >> "$log_file"
 echo "========================================" >> "$log_file"
 # 날짜 변경 시 자동 회전하며 로그 기록 (LOG_DIR은 셸 내부에서만 사용)
-python3 -u file_mover.py 2>&1 | while IFS= read -r line; do
+uv run python -u file_mover.py 2>&1 | while IFS= read -r line; do
     new_date=$(date +%Y%m%d)
     if [ "$new_date" != "$current_date" ]; then
         current_date="$new_date"

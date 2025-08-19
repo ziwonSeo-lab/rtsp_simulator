@@ -233,5 +233,5 @@ echo "   또는 스크립트 상단의 비트레이트 설정 부분 직접 수�
 
 echo ""
 echo "🚀 실행 준비 완료!"
-echo "   개별 실행: python3 run.py (해당 .env.streamX 파일을 .env로 복사 후)"
+echo "   개별 실행: uv run python run.py (.env.streamX 파일을 .env로 복사 후)"
 echo "   전체 실행: ./start_all_streams.sh" 

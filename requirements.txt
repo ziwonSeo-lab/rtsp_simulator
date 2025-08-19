@@ -1,129 +1,44 @@
-# RTSP 시뮬레이터 v2 - Python 패키지 종속성
-# 설치: pip install -r requirements.txt
+# 설치: uv pip sync requirements.txt  (또는 pip install -r requirements.txt)
 
-# === 필수 패키지 ===
-# OpenCV - 비디오 처리 및 RTSP 연결
+# === 필수(core) 패키지 ===
+# 운영에 항상 필요한 최소 의존성만 포함합니다.
 opencv-python>=4.8.0
-
-# Pillow - 이미지 처리 및 GUI 미리보기
 Pillow>=10.0.0
-
-# NumPy - 수치 연산 및 배열 처리
 numpy>=1.24.0
-
-# psutil - 시스템 리소스 모니터링 (CPU, RAM)
 psutil>=5.9.0
-
-# python-dotenv - 환경변수 관리 (.env 파일 지원)
 python-dotenv>=1.0.0
-
-# === 선택적 패키지 ===
-# GPUtil - GPU 모니터링 (NVIDIA GPU가 있는 경우)
-# 설치 안되어도 프로그램은 정상 동작함
-GPUtil>=1.4.0
-
-# === AI/ML 블러 모듈 관련 패키지 (CUDA 12.1 호환) ===
-# 🚨 특별 설치 필요 - 아래 명령어를 순서대로 실행하세요:
-
-# 1. PyTorch 2.5.1 + CUDA 12.1 (공식 호환표 기준)
-# pip install torch==2.5.1+cu121 torchvision==0.20.1+cu121 --index-url https://download.pytorch.org/whl/cu121
-
-# 2. 모델 변환 및 최적화 도구
-# sudo apt-get install -y cmake  # onnxsim 빌드에 필요
-onnxsim==0.4.33
-onnxruntime-gpu>=1.16.0
-
-# 3. TensorRT (NVIDIA PyPI 레지스트리)
-# pip install tensorrt-cu12==10.0.1 tensorrt-cu12-bindings==10.0.1 tensorrt-cu12-libs==10.0.1 --extra-index-url https://pypi.ngc.nvidia.com
-
-# 4. YOLO 모델 - 최신 버전
-# pip install --upgrade ultralytics
-
-# === 표준 AI/ML 패키지 (일반 설치) ===
-# YOLO 모델을 사용한 얼굴 탐지 및 블러 처리
-# 이 패키지들은 블러 모듈 사용 시에만 필요합니다
-
-# PyTorch 관련 (위의 특별 설치 후 생략 가능)
-# torch>=2.5.0
-# torchvision>=0.20.0
-
-# Ultralytics YOLO - 최신 YOLO 모델 (v8, v11)
+requests>=2.31.0
+watchdog>=3.0.0
+# 블러/추론 필수 (YOLO)
 ultralytics>=8.0.0
+# 기본 CPU 백엔드(필요 시 GPU용으로 교체 설치)
+torch>=2.5.0
+torchvision>=0.20.0
 
-# 추가 이미지 처리 라이브러리
-scikit-image>=0.21.0      # 고급 이미지 처리
-matplotlib>=3.7.0         # 시각화 및 디버깅용
+# === 선택(optional) 패키지 ===
+# 아래 항목들은 블러/추론/가속 등을 사용할 때만 주석을 해제하고 설치하세요.
+# 일부는 빌드 도구(cmake 등)가 필요하거나 GPU 환경이 필요합니다.
 
-# === 개발 도구 (선택사항) ===
-# 코드 포맷팅
-# black>=23.0.0
-# isort>=5.12.0
+# GPU 모니터링 (NVIDIA GPU가 있는 경우)
+# GPUtil>=1.4.0
 
-# 타입 체킹
-# mypy>=1.5.0
+# YOLO/추론 관련 (필요 시 대체)
+# onnxruntime-gpu>=1.16.0   # 또는 CPU용 onnxruntime>=1.16.0
+# onnxsim==0.4.33           # 소스 빌드 필요. cmake/ninja 등이 시스템에 설치되어야 함
+# scikit-image>=0.21.0      # 고급 이미지 처리(선택)
+# matplotlib>=3.7.0         # 시각화/디버깅(선택)
 
-# 테스트
-# pytest>=7.4.0
-# pytest-cov>=4.1.0
+# === 참고: CUDA 12.1 + TensorRT 설치 가이드(선택) ===
+# 1) PyTorch CUDA 12.1 (공식 호환표 기준)
+#    uv pip install torch==2.5.1+cu121 torchvision==0.20.1+cu121 \
+#        --index-url https://download.pytorch.org/whl/cu121
+# 2) 시스템 의존성(onnxsim 빌드용)
+#    sudo apt-get install -y cmake ninja-build build-essential git python3-dev
+# 3) TensorRT (NVIDIA PyPI 레지스트리)
+#    uv pip install tensorrt-cu12==10.0.1 tensorrt-cu12-bindings==10.0.1 \
+#        tensorrt-cu12-libs==10.0.1 --extra-index-url https://pypi.ngc.nvidia.com
 
-# === 🚀 빠른 CUDA 12.1 + TensorRT 설치 스크립트 ===
-# 다음 명령어들을 순서대로 실행하세요:
-#
-# # 1. 기본 패키지 설치
-# pip install -r requirements.txt
-#
-# # 2. PyTorch CUDA 12.1 설치
-# pip install torch==2.5.1+cu121 torchvision==0.20.1+cu121 \
-#             --index-url https://download.pytorch.org/whl/cu121
-#
-# # 3. 시스템 의존성 설치
-# sudo apt-get install -y cmake
-#
-# # 4. TensorRT 설치 (NVIDIA GPU 필요)
-# pip install tensorrt-cu12==10.0.1 \
-#             tensorrt-cu12-bindings==10.0.1 \
-#             tensorrt-cu12-libs==10.0.1 \
-#             --extra-index-url https://pypi.ngc.nvidia.com
-#
-# # 5. YOLO 최신 버전 설치
-# pip install --upgrade ultralytics
-#
-# # 6. GPU 모니터링 확인
-# python -c "import GPUtil; print(f'Found {len(GPUtil.getGPUs())} GPU(s)')"
-
-# === 시스템 요구사항 ===
-# Python >= 3.7
-# NVIDIA GPU (RTX 20xx 이상 권장, CUDA 12.1 지원)
-# CUDA Toolkit 12.1
-# cuDNN 8.x
-# FFmpeg (별도 설치 필요)
-#   - Windows: https://ffmpeg.org/download.html
-#   - macOS: brew install ffmpeg  
-#   - Ubuntu: sudo apt install ffmpeg
-
-# === 하드웨어 가속 (선택사항) ===
-# NVIDIA GPU: CUDA Toolkit 12.1 + TensorRT 10.0
-# Intel GPU: Intel Media SDK
-# AMD GPU: AMD Advanced Media Framework
-
-# === 📊 성능 벤치마크 (참고용) ===
-# RTX 4070 SUPER: ~240 FPS (H.264), ~120 FPS (H.265)
-# RTX 3080: ~200 FPS (H.264), ~100 FPS (H.265)
-# RTX 3060: ~150 FPS (H.264), ~75 FPS (H.265)
-# CPU Only: ~30 FPS (H.264), ~15 FPS (H.265)
-
-# === 설치 가이드 ===
-# 
-# 🟢 기본 설치 (블러 모듈 없이):
-# pip install opencv-python pillow numpy psutil GPUtil
-# 
-# 🟡 AI 블러 모듈 포함 (CPU):
-# pip install -r requirements.txt
-# 
-# 🔴 고성능 GPU 가속 (CUDA 12.1 + TensorRT):
-# 위의 "빠른 CUDA 12.1 + TensorRT 설치 스크립트" 참고
-#
-# 🚨 주의사항:
-# - TensorRT는 NVIDIA GPU에서만 작동
-# - CUDA 버전 호환성 확인 필수
-# - 가상환경 사용 강력 권장
+# === 시스템 요구사항(요약) ===
+# - Python >= 3.8
+# - FFmpeg (별도 설치 필요): sudo apt-get install -y ffmpeg
+# - (선택) NVIDIA GPU, CUDA/TensorRT, cmake/ninja 등 빌드 도구
