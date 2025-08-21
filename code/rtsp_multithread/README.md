@@ -19,6 +19,10 @@ uv pip sync requirements.txt
 # 3) 환경파일(.env.streamN) 자동 생성
 cd code/rtsp_multithread
 ./generate_env.sh
+# 스트림 개수는 고정이 아닙니다. 다음 우선순위로 결정됩니다:
+# - generate_env.sh에서 설정한 NUM_STREAMS(기본 6)
+# - 실행 시 NUM_STREAMS=N ./start_all_streams.sh 로 덮어쓰기 가능
+# - 현재 디렉터리의 .env.stream* 파일 중 최대 인덱스도 자동 감지
 
 # 4) 전체 스트림 + 파일 이동 서비스 실행
 ./start_all_streams.sh
@@ -46,8 +50,8 @@ cd code/rtsp_multithread
 - `file_mover.py`: watchdog으로 임시 디렉터리 감시 → 최종 경로(`/YYYY/MM/DD/HH/`)로 이동 → MP4 이동 완료 시 API 전송.
 
 ### Shell 스크립트
-- `generate_env.sh`: 다중 스트림용 `.env.streamN` 자동 생성(스트림 수/URL, 출력/로그/FFmpeg/API 등).
-- `start_all_streams.sh`: 각 `.env.streamN`을 기반으로 스트림을 개별 screen 세션으로 실행하고, 파일 이동 서비스 세션도 실행. 내부 호출은 `uv run python` 사용.
+- `generate_env.sh`: 다중 스트림용 `.env.streamN` 자동 생성(스트림 수/URL, 출력/로그/FFmpeg/API 등). NUM_STREAMS로 스트림 개수를 설정합니다.
+- `start_all_streams.sh`: 각 `.env.streamN`을 기반으로 스트림을 개별 screen 세션으로 실행하고, 파일 이동 서비스 세션도 실행. 내부 호출은 `uv run python` 사용. 스트림 개수는 고정값이 아닌 NUM_STREAMS/`.env.stream*`에 따라 동적으로 결정됩니다.
 - `status_all_streams.sh`: 실행 중 세션/로그 현황 요약 출력(날짜 디렉토리 경로 반영).
 - `stop_all_streams.sh`: 실행 중 세션 종료, 임시 파일 정리.
 
