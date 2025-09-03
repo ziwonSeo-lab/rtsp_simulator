@@ -251,7 +251,7 @@ def create_camera_video_data(
 		gear_name_ko=gear_name_ko,
 		file_name=file_name,
 		file_real_name=file_name,
-		file_path=file_path,
+		file_path=os.path.dirname(file_path),
 		file_size=file_size,
 		file_ext=file_ext,
 		record_start_time=record_start_time,

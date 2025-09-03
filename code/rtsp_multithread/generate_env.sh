@@ -14,9 +14,9 @@ END_PORT=1116
 VESSEL_NAME=${VESSEL_NAME:-vesselTest}
 
 # 비트레이트 설정
-TARGET_BITRATE=${TARGET_BITRATE:-5M}
+TARGET_BITRATE=${TARGET_BITRATE:-2M}
 MIN_BITRATE=${MIN_BITRATE:-1M}
-MAX_BITRATE=${MAX_BITRATE:-10M}
+MAX_BITRATE=${MAX_BITRATE:-3M}
 
 # 블러 모듈 설정
 export BLUR_MODULE_PATH=${BLUR_MODULE_PATH:-/home/koast-user/rtsp_simulator/blur_module/ipcamera_blur.py}
@@ -29,8 +29,8 @@ export FINAL_OUTPUT_PATH=${FINAL_OUTPUT_PATH:-/mnt/raid5/cam/}
 export LOG_DIR=${LOG_DIR:-/mnt/raid5/logs}
 export DEFAULT_INPUT_FPS=${DEFAULT_INPUT_FPS:-15.0}
 export VIDEO_SEGMENT_DURATION=${VIDEO_SEGMENT_DURATION:-300} # 영상 길이 설정
-export VIDEO_WIDTH=${VIDEO_WIDTH:-1920}
-export VIDEO_HEIGHT=${VIDEO_HEIGHT:-1080}
+export VIDEO_WIDTH=${VIDEO_WIDTH:-1280}
+export VIDEO_HEIGHT=${VIDEO_HEIGHT:-720}
 export DEFAULT_LATITUDE=${DEFAULT_LATITUDE:-37.5665}
 export DEFAULT_LONGITUDE=${DEFAULT_LONGITUDE:-126.9780}
 export FRAME_QUEUE_SIZE=${FRAME_QUEUE_SIZE:-100}
@@ -38,6 +38,13 @@ export CONNECTION_TIMEOUT=${CONNECTION_TIMEOUT:-10}
 export RECONNECT_INTERVAL=${RECONNECT_INTERVAL:-5}
 export ENABLE_MONITORING=${ENABLE_MONITORING:-true}
 export MONITORING_INTERVAL=${MONITORING_INTERVAL:-1.0}
+
+# RTSP 송출 기본값
+export RTSP_OUTPUT_ENABLED=${RTSP_OUTPUT_ENABLED:-true}
+export RTSP_OUTPUT_TRANSPORT=${RTSP_OUTPUT_TRANSPORT:-tcp}
+export RTSP_OUTPUT_BASE_URL=${RTSP_OUTPUT_BASE_URL:-rtsp://127.0.0.1:1111}
+export RTSP_OUTPUT_PORT_START=${RTSP_OUTPUT_PORT_START:-1111}
+export RTSP_OUTPUT_PER_STREAM_PORTS=${RTSP_OUTPUT_PER_STREAM_PORTS:-true}
 
 # API 설정
 export BLACKBOX_API_URL=${BLACKBOX_API_URL:-http://localhost}
@@ -47,6 +54,13 @@ export BLACKBOX_ENABLED=${BLACKBOX_ENABLED:-true}
 
 # 녹화 조건 설정
 export RECORDING_SPEED_THRESHOLD=${RECORDING_SPEED_THRESHOLD:-5.0}
+
+# ===================== 저지연/저부하 FFmpeg 기본값 =====================
+export FFMPEG_OUTPUT_FPS=${FFMPEG_OUTPUT_FPS:-15}
+export FFMPEG_KEYINT=${FFMPEG_KEYINT:-30}
+export FFMPEG_PRESET=${FFMPEG_PRESET:-ultrafast}
+export FFMPEG_TUNE=${FFMPEG_TUNE:-zerolatency}
+# =====================================================================
 
 # =============================================================================
 # 사용자 설정: 스트림 개수 & RTSP URL 목록 (여기를 수정해서 사용)
@@ -59,10 +73,10 @@ NUM_STREAMS=${NUM_STREAMS:-6}
 
 # 아래 URL을 원하는 URL로 교체하세요
 RTSP_URLS=(
-    "rtsp://10.2.10.158:1111/live"
-    "rtsp://10.2.10.158:1112/live"
-    "rtsp://10.2.10.158:1113/live"
-    "rtsp://10.2.10.158:1114/live"
+    "rtsp://root:root@192.168.1.101:554/cam0_0"
+    "rtsp://root:root@192.168.1.102:554/cam0_0"
+    "rtsp://root:root@192.168.1.103:554/cam0_0"
+    "rtsp://root:root@192.168.1.104:554/cam0_0"
     "rtsp://10.2.10.158:1115/live"
     "rtsp://10.2.10.158:1116/live"
 )
@@ -99,7 +113,25 @@ for i in $(seq 1 ${NUM_STREAMS}); do
     echo "   URL: $RTSP_URL"
     echo "   선박명: $VESSEL_NAME"
     echo "   파일: $ENV_FILE"
+    
 
+    # 산출 송출 호스트/포트 (BASE_URL의 포트 유무와 관계없이 host만 추출 후 포트 적용)
+    RTSP_OUTPUT_HOST=127.0.0.1
+    RTSP_OUTPUT_BASE_PORT=$(echo "${RTSP_OUTPUT_BASE_URL}" | sed -E 's#^rtsp://[^/:]+:([0-9]+).*$#\1#')
+    if [[ "${RTSP_OUTPUT_BASE_PORT}" == "${RTSP_OUTPUT_BASE_URL}" ]]; then
+        RTSP_OUTPUT_BASE_PORT=""
+    fi
+    if [ "${RTSP_OUTPUT_PER_STREAM_PORTS}" = "true" ]; then
+        RTSP_OUTPUT_PORT=$((RTSP_OUTPUT_PORT_START + STREAM_NUMBER - 1))
+    else
+        if [ -n "${RTSP_OUTPUT_BASE_PORT}" ]; then
+            RTSP_OUTPUT_PORT="${RTSP_OUTPUT_BASE_PORT}"
+        else
+            RTSP_OUTPUT_PORT="${RTSP_OUTPUT_PORT_START}"
+        fi
+    fi
+    echo "   RTSP 송출 URL: rtsp://${RTSP_OUTPUT_HOST}:${RTSP_OUTPUT_PORT}/live"
+    
     cat > "$ENV_FILE" << EOF
 # RTSP Multithread Processor 환경변수 설정 - 스트림 ${i}
 # 자동 생성: $(date)
@@ -113,8 +145,8 @@ RTSP_URL=$RTSP_URL
 VESSEL_NAME=$VESSEL_NAME
 STREAM_NUMBER=$STREAM_NUMBER
 # 카메라 식별자 (필요에 맞게 수정해서 사용)
-CAMERA_ID=${CAMERA_ID:-$STREAM_NUMBER}
-CAMERA_NAME=${CAMERA_NAME:-camera$STREAM_NUMBER}
+CAMERA_ID=
+CAMERA_NAME=
  
  # =============================================================================
  # 블러 처리 설정
@@ -176,12 +208,22 @@ LOG_ROTATION=on
 LOG_ROTATE_INTERVAL=1
 LOG_BACKUP_COUNT=7
 
-# FFmpeg 고급 설정
-# FFMPEG_PRESET=medium
-# FFMPEG_TUNE=film
+# FFmpeg 저지연 설정
+FFMPEG_PRESET=$FFMPEG_PRESET
+FFMPEG_TUNE=$FFMPEG_TUNE
 FFMPEG_TARGET_BITRATE=$TARGET_BITRATE
 FFMPEG_MIN_BITRATE=$MIN_BITRATE
 FFMPEG_MAX_BITRATE=$MAX_BITRATE
+FFMPEG_OUTPUT_FPS=$FFMPEG_OUTPUT_FPS
+FFMPEG_KEYINT=$FFMPEG_KEYINT
+
+# =============================================================================
+# RTSP 송출 설정
+# =============================================================================
+RTSP_OUTPUT_ENABLED=$RTSP_OUTPUT_ENABLED
+RTSP_OUTPUT_TRANSPORT=$RTSP_OUTPUT_TRANSPORT
+# 스트림별 송출 URL (host는 BASE_URL에서 추출, 포트는 계산값)
+RTSP_OUTPUT_URL=rtsp://${RTSP_OUTPUT_HOST}:${RTSP_OUTPUT_PORT}/live
 EOF
 
     echo "   ✅ $ENV_FILE 생성 완료"

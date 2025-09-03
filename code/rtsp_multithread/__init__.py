@@ -16,6 +16,7 @@ from .blur_handler import BlurHandler
 from .video_writer import VideoWriterManager
 from .monitor import SystemMonitor
 from .main import RTSPProcessor
+from .rtsp_publisher import RtspPublisher
 
 __all__ = [
     'RTSPConfig',
@@ -26,5 +27,6 @@ __all__ = [
     'BlurHandler',
     'VideoWriterManager',
     'SystemMonitor',
-    'RTSPProcessor'
+    'RTSPProcessor',
+    'RtspPublisher'
 ] 

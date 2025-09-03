@@ -115,6 +115,12 @@ done
 
 sleep 2
 
+# 외부 접속용 IP (첫 번째 인터페이스 IP)
+LOCAL_IP=$(hostname -I | awk '{print $1}')
+if [ -z "$LOCAL_IP" ]; then
+	LOCAL_IP="127.0.0.1"
+fi
+
 # 스트림 실행
 for i in $(seq 1 ${NUM_STREAMS}); do
     session_name="${BASE_SESSION_NAME}${i}"
@@ -126,6 +132,16 @@ for i in $(seq 1 ${NUM_STREAMS}); do
     echo "   세션명: $session_name"
     echo "   설정파일: $env_file"
     echo "   로그파일: $log_file"
+    raw_out=$(grep -E '^RTSP_OUTPUT_URL=' "$env_file" | tail -n1 | cut -d= -f2- | tr -d '"')
+   if [ -n "$raw_out" ]; then
+       port=$(echo "$raw_out" | sed -E 's#^rtsp://[^/:]+:([0-9]+).*#\1#')
+       path=$(echo "$raw_out" | sed -E 's#^rtsp://[^/]+(/.*)$#\1#')
+       [ -z "$port" ] && port=1111
+       [ -z "$path" ] && path="/live"
+       echo "   RTSP 송출 URL: rtsp://${LOCAL_IP}:${port}${path}"
+   else
+       echo "   RTSP 송출 URL: (설정 없음)"
+   fi
     
             # .env 파일을 임시로 복사
         cp "$env_file" ".env.temp${i}"

@@ -8,7 +8,21 @@ for i in {0..5}; do
     # veth 인터페이스 IP 주소 매핑
     veth_ip="192.168.$((100 + i)).1"
     
-    cat > ../../config/mediamtx/port_${rtsp_port}.yml << EOF
+    # 경로 계산
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    CONFIG_DIR="$SCRIPT_DIR/../../config/mediamtx"
+    LOG_DIR="$SCRIPT_DIR/../../logs"
+
+    mkdir -p "$CONFIG_DIR" "$LOG_DIR"
+
+    # mediamtx 바이너리 확인
+    if ! command -v mediamtx >/dev/null 2>&1; then
+        echo "❌ mediamtx 바이너리를 찾을 수 없습니다. PATH를 확인하거나 설치하세요."
+        echo "   설치 예: wget https://github.com/bluenviron/mediamtx/releases/... ; chmod +x mediamtx ; sudo mv mediamtx /usr/local/bin/"
+        exit 1
+    fi
+    
+    cat > "$CONFIG_DIR/port_${rtsp_port}.yml" << EOF
 # MediaMTX 설정 - RTSP:${rtsp_port}, RTMP:${rtmp_port}
 rtspAddress: :${rtsp_port}
 protocols: [tcp,udp]
@@ -26,6 +40,7 @@ paths:
 EOF
     
     echo "MediaMTX 포트 ${rtsp_port} 시작 중..."
-    nohup mediamtx ../../config/mediamtx/port_${rtsp_port}.yml > ../../logs/port_${rtsp_port}.log 2>&1 &
+    nohup mediamtx "$CONFIG_DIR/port_${rtsp_port}.yml" > "$LOG_DIR/port_${rtsp_port}.log" 2>&1 &
     sleep 2
+
 done

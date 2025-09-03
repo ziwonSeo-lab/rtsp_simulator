@@ -23,11 +23,13 @@ try:
 	from .blur_handler import BlurHandler
 	from .video_writer import VideoWriterManager
 	from .subtitle_writer import SubtitleWriter
+	from .rtsp_publisher import RtspPublisher
 except ImportError:
 	from config import RTSPConfig, format_gps_coordinates
 	from blur_handler import BlurHandler
 	from video_writer import VideoWriterManager
 	from subtitle_writer import SubtitleWriter
+	from rtsp_publisher import RtspPublisher
 
 logger = logging.getLogger(__name__)
 
@@ -115,10 +117,14 @@ class OverlayRenderer:
 		height_scale = frame_height / base_height
 		scale_factor = min(width_scale, height_scale)
 		
+		# 두께는 정수이면서 최소 1을 보장
+		font_thickness_int = max(1, int(round(1 * scale_factor)))
+		outline_thickness_int = max(1, int(round(1 * scale_factor)))
+		
 		return {
 			"font_scale": 0.5 * scale_factor,
-			"font_thickness": max(0.5, int(scale_factor)),
-			"outline_thickness": 1,
+			"font_thickness": font_thickness_int,
+			"outline_thickness": outline_thickness_int,
 			"margin_x": int(2 * scale_factor),
 			"margin_y": int(2 * scale_factor)
 		}
@@ -187,6 +193,8 @@ class FrameProcessor(threading.Thread):
 		self.subtitle_writer = SubtitleWriter(config)
 		# 비디오 세그먼트 이벤트를 자막 작성기에 연결
 		self.video_writer.add_segment_listener(self.subtitle_writer)
+		# RTSP 퍼블리셔 (옵션)
+		self.rtsp_publisher = RtspPublisher(config) if getattr(config, 'rtsp_output_enabled', False) else None
 		
 		# 통계
 		self.stats = ProcessingStats()
@@ -209,6 +217,10 @@ class FrameProcessor(threading.Thread):
 		logger.info("프레임 처리 시작")
 		self.running = True
 		
+		# RTSP 퍼블리셔 시작 (활성화된 경우)
+		if self.rtsp_publisher:
+			self.rtsp_publisher.start()
+		
 		frame_timeout = 1.0  # 1초 타임아웃
 		
 		while self.running:
@@ -221,26 +233,30 @@ class FrameProcessor(threading.Thread):
 					# 타임아웃 시 계속 진행
 					continue
 				
-				# 녹화 허용 여부 확인 (속도 임계값) - 블러/저장 모두 스킵
+				# 녹화 허용 여부 확인 (속도 임계값) - 블러/RTSP는 유지, 저장만 중단
+				is_recording_allowed = True
 				if self.blackbox_manager and not self.blackbox_manager.is_recording_enabled():
+					is_recording_allowed = False
 					if self.video_writer and self.video_writer.current_writer:
 						logger.info("속도 임계 초과로 저장 중단, 현재 세그먼트 finalize")
 						self.video_writer.finalize_current_video()
-					self.stats.processed_frames += 1
-					self.frame_queue.task_done()
-					continue
 				
 				# 프레임 처리
 				processed_frame = self.process_frame(frame)
 				
 				if processed_frame is not None:
-					# 영상 저장 (세그먼트 시작을 보장하기 위해 먼저 수행)
-					if self.video_writer.write_frame(processed_frame):
-						self.stats.saved_frames += 1
-					# 1초 단위 자막 업데이트 (세그먼트가 열린 뒤에 기록)
-					overlay_text = self.overlay_renderer.create_single_line_overlay()
-					self.subtitle_writer.update(timestamp, overlay_text)
-					
+					# 영상 저장 및 자막 업데이트는 '녹화 허용'시에만 수행
+					if is_recording_allowed:
+						# 영상 저장 (세그먼트 시작을 보장하기 위해 먼저 수행)
+						if self.video_writer.write_frame(processed_frame):
+							self.stats.saved_frames += 1
+						# 1초 단위 자막 업데이트 (세그먼트가 열린 뒤에 기록)
+						overlay_text = self.overlay_renderer.create_single_line_overlay()
+						self.subtitle_writer.update(timestamp, overlay_text)
+					# RTSP 송출 (옵션) - 녹화 여부와 무관하게 수행
+					if self.rtsp_publisher and self.rtsp_publisher.isOpened():
+						self.rtsp_publisher.write(processed_frame)
+						
 					self.stats.processed_frames += 1
 					
 				# 큐 작업 완료 표시
@@ -306,6 +322,10 @@ class FrameProcessor(threading.Thread):
 		# 자막 작성기 정리
 		if self.subtitle_writer:
 			self.subtitle_writer.cleanup()
+		
+		# RTSP 퍼블리셔 정리
+		if self.rtsp_publisher:
+			self.rtsp_publisher.stop()
 		
 		logger.info("프레임 프로세서 정리 완료")
 	

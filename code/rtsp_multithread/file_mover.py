@@ -232,7 +232,11 @@ class VideoFileMoveHandler(FileSystemEventHandler):
 		
 		# 파일이 실제로 존재하는지 확인
 		if not file_path.exists():
-			logger.warning(f"파일이 존재하지 않음: {file_path}")
+			# .srt가 다른 이벤트 흐름에서 이미 이동된 경우: 정상 동작이므로 경고를 낮춤
+			if str(file_path).lower().endswith('.srt'):
+				logger.debug(f"자막 파일이 이미 이동되어 temp에 없음(정상): {file_path}")
+			else:
+				logger.warning(f"파일이 존재하지 않음: {file_path}")
 			return
 		
 		self.processing_files.add(str(file_path))

@@ -10,7 +10,9 @@ BASE_SESSION_NAME="rtsp_stream"
 FILE_MOVER_SESSION="rtsp_file_mover"
 # 프로필 기반 설정 (sim/camera 등)
 PROFILE="${PROFILE:-sim}"
-ENV_BASE_DIR="$(cd "$(dirname "$0")" && pwd)/profiles/$PROFILE"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENV_BASE_DIR="$SCRIPT_DIR/profiles/$PROFILE"
+ALT_ENV_DIR="$SCRIPT_DIR"
 
 # 실행 중인 세션 확인
 echo "📋 실행 중인 세션 확인..."
@@ -64,16 +66,40 @@ get_env_val() {
 
 for i in {1..6}; do
 	env_file="$ENV_BASE_DIR/.env.stream${i}"
-	[ -f "$env_file" ] || continue
+	if [ ! -f "$env_file" ]; then
+		# 프로필 디렉터리에 없으면 현재 디렉터리(.env.streamX)로 폴백
+		env_file="$ALT_ENV_DIR/.env.stream${i}"
+	fi
 	# 경로 추출 (기본값 보정)
-	temp_output_path=$(get_env_val TEMP_OUTPUT_PATH "$env_file"); [ -n "$temp_output_path" ] || temp_output_path="./output/temp/"
-	# temp_ 파일만 대상
+	if [ -f "$env_file" ]; then
+		temp_output_path=$(get_env_val TEMP_OUTPUT_PATH "$env_file"); [ -n "$temp_output_path" ] || temp_output_path="./output/temp/"
+	else
+		echo "   ℹ️  스트림 ${i}: env 파일 없음, 기본 경로로 처리"
+		temp_output_path="./output/temp/"
+	fi
+	# temp_ mp4만 대상 (우선)
 	shopt -s nullglob
 	pending_files=("$temp_output_path"/temp_*.mp4)
 	shopt -u nullglob
 	if [ ${#pending_files[@]} -gt 0 ]; then
-		echo "   스트림 ${i}: $temp_output_path 내 temp_ 파일 처리 ${#pending_files[@]}개"
+		echo "   스트림 ${i}: $temp_output_path 내 temp_ MP4 처리 ${#pending_files[@]}개"
 		for f in "${pending_files[@]}"; do
+			base=$(basename "$f")
+			final_name="${base#temp_}"
+			if mv -f -- "$f" "$temp_output_path/$final_name"; then
+				echo "      ▶ ${base} → ${final_name}"
+			else
+				echo "      ⚠️  이름 변경 실패: ${base}"
+			fi
+		done
+	fi
+	# temp_ srt도 함께 처리 (watcher가 srt 단독 rename도 감지 가능)
+	shopt -s nullglob
+	pending_srt=("$temp_output_path"/temp_*.srt)
+	shopt -u nullglob
+	if [ ${#pending_srt[@]} -gt 0 ]; then
+		echo "   스트림 ${i}: $temp_output_path 내 temp_ SRT 처리 ${#pending_srt[@]}개"
+		for f in "${pending_srt[@]}"; do
 			base=$(basename "$f")
 			final_name="${base#temp_}"
 			if mv -f -- "$f" "$temp_output_path/$final_name"; then

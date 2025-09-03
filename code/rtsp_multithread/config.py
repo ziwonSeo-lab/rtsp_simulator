@@ -142,6 +142,65 @@ class FFmpegConfig:
         cmd.append(output_file)
         return cmd
 
+    def get_ffmpeg_rtsp_command(self, input_settings: Dict, output_url: str, transport: str = 'tcp') -> List[str]:
+        """RTSP 송출용 FFmpeg 명령어 생성"""
+        cmd = ['ffmpeg', '-hide_banner', '-loglevel', self.loglevel]
+        
+        # 입력 설정 (rawvideo from stdin)
+        cmd.extend([
+            '-f', 'rawvideo',
+            '-vcodec', 'rawvideo',
+            '-s', f"{input_settings['width']}x{input_settings['height']}",
+            '-pix_fmt', 'bgr24',
+            '-r', str(int(self.input_fps)),
+            '-i', '-'
+        ])
+        
+        # RTSP 송출은 저지연/호환 우선으로 별도 보정(파일 저장 설정과 분리)
+        rtsp_preset = 'ultrafast'
+        rtsp_tune = 'zerolatency'
+        rtsp_profile = 'baseline'
+        rtsp_level = self.level
+        rtsp_g = max(10, min(self.keyframe_interval, 60))
+        
+        # 비디오 코덱 및 품질(지연 최소화 및 호환성 향상)
+        cmd.extend([
+            '-c:v', self.video_codec,
+            '-b:v', self.target_bitrate,
+            '-minrate', self.min_bitrate,
+            '-maxrate', self.max_bitrate,
+            '-bufsize', self.buffer_size,
+            '-r', str(int(self.output_fps)),
+            '-preset', rtsp_preset,
+            '-tune', rtsp_tune,
+            '-profile:v', rtsp_profile,
+            '-level', rtsp_level,
+            '-g', str(rtsp_g),
+            '-pix_fmt', self.pixel_format,
+            '-bf', '0',
+            '-x264-params', 'scenecut=0:open_gop=0:rc-lookahead=0:sync-lookahead=0:repeat-headers=1'
+        ])
+        
+        # 저지연/타임스탬프 안정화
+        cmd.extend([
+            '-fflags', '+genpts',
+            '-flags', 'low_delay',
+            '-use_wallclock_as_timestamps', '1',
+            '-muxdelay', '0',
+            '-muxpreload', '0'
+        ])
+        
+        # RTSP 전송 설정
+        cmd.extend([
+            '-f', 'rtsp',
+            '-rtsp_transport', transport,
+            '-vsync', self.vsync_mode,
+            '-flush_packets', '1'
+        ])
+        
+        cmd.append(output_url)
+        return cmd
+
 @dataclass
 class RTSPConfig:
     """단일 스트림 처리를 위한 설정 클래스"""
@@ -186,6 +245,11 @@ class RTSPConfig:
     
     # FFmpeg 설정
     ffmpeg_config: FFmpegConfig = None
+
+    # RTSP 송출 설정
+    rtsp_output_enabled: bool = get_env_value('RTSP_OUTPUT_ENABLED', False, bool)
+    rtsp_output_url: Optional[str] = get_env_value('RTSP_OUTPUT_URL', None)
+    rtsp_output_transport: str = get_env_value('RTSP_OUTPUT_TRANSPORT', 'tcp')
     
     def __post_init__(self):
         """초기화 후 처리"""
@@ -231,7 +295,10 @@ class RTSPConfig:
             blackbox_api_url=get_env_value('BLACKBOX_API_URL', 'http://localhost'),
             api_timeout=get_env_value('API_TIMEOUT', 5, int),
             api_poll_interval=get_env_value('API_POLL_INTERVAL', 1.0, float),
-            recording_speed_threshold=get_env_value('RECORDING_SPEED_THRESHOLD', 5.0, float)
+            recording_speed_threshold=get_env_value('RECORDING_SPEED_THRESHOLD', 5.0, float),
+            rtsp_output_enabled=get_env_value('RTSP_OUTPUT_ENABLED', False, bool),
+            rtsp_output_url=get_env_value('RTSP_OUTPUT_URL', None),
+            rtsp_output_transport=get_env_value('RTSP_OUTPUT_TRANSPORT', 'tcp')
         )
     
     def validate(self) -> bool:
@@ -256,6 +323,15 @@ class RTSPConfig:
             if self.frame_queue_size <= 0:
                 logger.error("프레임 큐 크기는 0보다 커야 합니다.")
                 return False
+
+            # RTSP 송출 검증 (활성화된 경우)
+            if self.rtsp_output_enabled:
+                if not self.rtsp_output_url or not isinstance(self.rtsp_output_url, str):
+                    logger.error("RTSP 송출이 활성화되었지만 RTSP_OUTPUT_URL이 설정되지 않았습니다.")
+                    return False
+                if self.rtsp_output_transport not in ('tcp', 'udp'):
+                    logger.warning("RTSP_OUTPUT_TRANSPORT 값이 올바르지 않아 'tcp'로 설정합니다.")
+                    self.rtsp_output_transport = 'tcp'
             
             logger.info("설정 검증 완료")
             return True
