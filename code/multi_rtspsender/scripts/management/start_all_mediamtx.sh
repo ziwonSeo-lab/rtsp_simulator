@@ -1,4 +1,4 @@
-for i in {0..5}; do
+for i in {0..7}; do
     rtsp_port=$((1111 + i))
     rtmp_port=$((1911 + i))
     rtp_port=$((8000 + i * 2))

@@ -133,7 +133,7 @@ multi_rtspsender/
 
 ### 3단계: 스트림 송출
 ```bash
-python3 src/server/rtsp_sender.py
+sudo python3 src/server/rtsp_sender.py
 ```
 
 ### 4단계: 패킷 손실률 테스트
